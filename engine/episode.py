@@ -163,6 +163,9 @@ class EpisodeRunner:
                 "n_active": obs["global"]["n_active_streams"],
                 "mode_counts": obs["global"]["n_streams_by_mode"],
             }
+            # Log AIF belief state if available (for interpretability plots)
+            if hasattr(self.controller, 'belief'):
+                step_record["belief"] = self.controller.belief.tolist()
             history.append(step_record)
 
             # 8. Print status

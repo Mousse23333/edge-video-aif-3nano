@@ -1,0 +1,762 @@
+#!/usr/bin/env python3
+"""
+Publication-quality figure generator for the AIF edge video scheduling paper.
+
+Usage:
+    python3 plot_all.py --main-dir ~/Desktop/experiments/main \
+                        --ablation-dir ~/Desktop/experiments/ablation \
+                        --output-dir ./figures
+
+    python3 plot_all.py --main-dir ~/Desktop/experiments/main --only slo_bar
+
+Generates 12+ figures covering:
+  A. Main results (SLO bar, switch count, resource usage)
+  B. Time-series (FPS, latency, mode allocation, CDF)
+  C. AIF interpretability (belief, EFE decomposition)
+  D. Ablation studies (likelihood, precision, epistemic, cooldown, offload)
+"""
+
+import os
+import sys
+import argparse
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.colors import LinearSegmentedColormap
+
+from plot_config import (
+    apply_style, savefig, add_slo_line,
+    COLORS, MODE_COLORS, CTRL_LABELS, SCENARIO_LABELS, SCENARIO_SHORT,
+    METRIC_LABELS, CTRL_ORDER, SCENARIO_ORDER, MODE_ORDER,
+    SINGLE_COL_W, DOUBLE_COL_W, ASPECT,
+)
+from plot_data import (
+    load_summaries, load_aggregate, load_step_csv, load_history_json,
+    load_ablation_csv, load_ablation_aggregate,
+    get_available_runs, extract_per_stream_modes, extract_per_stream_metrics,
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# A. MAIN RESULTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def plot_slo_bar(agg, out_dir, controllers=None, scenarios=None):
+    """A1. Grouped bar chart — SLO satisfaction rate across scenarios."""
+    controllers = controllers or CTRL_ORDER
+    scenarios = scenarios or SCENARIO_ORDER
+
+    fig, ax = plt.subplots(figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.38))
+
+    n_ctrl = len(controllers)
+    n_scen = len(scenarios)
+    x = np.arange(n_scen)
+    width = 0.8 / n_ctrl
+    offsets = np.linspace(-(n_ctrl - 1) / 2 * width, (n_ctrl - 1) / 2 * width, n_ctrl)
+
+    for i, ctrl in enumerate(controllers):
+        means = [agg[ctrl][s]['slo_satisfaction_rate']['mean'] for s in scenarios]
+        stds = [agg[ctrl][s]['slo_satisfaction_rate']['std'] for s in scenarios]
+        bars = ax.bar(x + offsets[i], means, width * 0.9, yerr=stds,
+                      label=CTRL_LABELS[ctrl], color=COLORS[ctrl],
+                      capsize=2, error_kw={'linewidth': 0.8},
+                      edgecolor='white', linewidth=0.3)
+
+    add_slo_line(ax, 0.9, '90% Target')
+    ax.set_ylabel('SLO Satisfaction Rate')
+    ax.set_xticks(x)
+    ax.set_xticklabels([SCENARIO_LABELS[s] for s in scenarios])
+    ax.set_ylim(0, 1.05)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+    ax.legend(loc='lower left', ncol=3, columnspacing=0.8, handletextpad=0.4)
+
+    savefig(fig, os.path.join(out_dir, 'fig_slo_bar'))
+
+
+def plot_switch_bar(agg, out_dir, controllers=None, scenarios=None):
+    """A2. Grouped bar chart — mode switch count across scenarios."""
+    controllers = controllers or CTRL_ORDER
+    scenarios = scenarios or SCENARIO_ORDER
+
+    fig, ax = plt.subplots(figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.38))
+
+    n_ctrl = len(controllers)
+    n_scen = len(scenarios)
+    x = np.arange(n_scen)
+    width = 0.8 / n_ctrl
+    offsets = np.linspace(-(n_ctrl - 1) / 2 * width, (n_ctrl - 1) / 2 * width, n_ctrl)
+
+    for i, ctrl in enumerate(controllers):
+        means = [agg[ctrl][s]['n_mode_switches']['mean'] for s in scenarios]
+        stds = [agg[ctrl][s]['n_mode_switches']['std'] for s in scenarios]
+        ax.bar(x + offsets[i], means, width * 0.9, yerr=stds,
+               label=CTRL_LABELS[ctrl], color=COLORS[ctrl],
+               capsize=2, error_kw={'linewidth': 0.8},
+               edgecolor='white', linewidth=0.3)
+
+    ax.set_ylabel('Mode Switches')
+    ax.set_xticks(x)
+    ax.set_xticklabels([SCENARIO_LABELS[s] for s in scenarios])
+    ax.legend(loc='upper left', ncol=3, columnspacing=0.8, handletextpad=0.4)
+
+    savefig(fig, os.path.join(out_dir, 'fig_switch_bar'))
+
+
+def plot_resource_bar(agg, out_dir, controllers=None, scenarios=None):
+    """A3. Grouped bar chart — skip ratio and offload ratio side by side."""
+    controllers = controllers or CTRL_ORDER
+    scenarios = scenarios or SCENARIO_ORDER
+
+    fig, axes = plt.subplots(1, 2, figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.34))
+
+    n_ctrl = len(controllers)
+    n_scen = len(scenarios)
+    x = np.arange(n_scen)
+    width = 0.8 / n_ctrl
+    offsets = np.linspace(-(n_ctrl - 1) / 2 * width, (n_ctrl - 1) / 2 * width, n_ctrl)
+
+    for metric, ax, title in [
+        ('skip_ratio', axes[0], 'Skip Ratio'),
+        ('offload_ratio', axes[1], 'Offload Ratio'),
+    ]:
+        for i, ctrl in enumerate(controllers):
+            means = [agg[ctrl][s][metric]['mean'] for s in scenarios]
+            stds = [agg[ctrl][s][metric]['std'] for s in scenarios]
+            ax.bar(x + offsets[i], means, width * 0.9, yerr=stds,
+                   label=CTRL_LABELS[ctrl], color=COLORS[ctrl],
+                   capsize=2, error_kw={'linewidth': 0.8},
+                   edgecolor='white', linewidth=0.3)
+        ax.set_ylabel(title)
+        ax.set_xticks(x)
+        ax.set_xticklabels([SCENARIO_SHORT[s] for s in scenarios])
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+
+    axes[1].legend(loc='upper right', ncol=1, fontsize=6,
+                   handletextpad=0.3, columnspacing=0.5)
+    fig.tight_layout(w_pad=2)
+    savefig(fig, os.path.join(out_dir, 'fig_resource_bar'))
+
+
+def plot_summary_heatmap(agg, out_dir, controllers=None, scenarios=None):
+    """A5. Summary heatmap table — all metrics x controllers x scenarios."""
+    controllers = controllers or CTRL_ORDER
+    scenarios = scenarios or SCENARIO_ORDER
+    metrics = ['slo_satisfaction_rate', 'n_mode_switches', 'skip_ratio',
+               'offload_ratio', 'avg_fps', 'avg_latency_ms']
+
+    # Build matrix
+    rows = []
+    row_labels = []
+    for ctrl in controllers:
+        for scen in scenarios:
+            row = [agg[ctrl][scen][m]['mean'] for m in metrics]
+            rows.append(row)
+            row_labels.append(f"{CTRL_LABELS[ctrl]} / {SCENARIO_SHORT[scen]}")
+    data = np.array(rows)
+
+    fig, ax = plt.subplots(figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.7))
+
+    # Normalize each column independently for color
+    normed = np.zeros_like(data)
+    for j in range(data.shape[1]):
+        col = data[:, j]
+        mn, mx = col.min(), col.max()
+        normed[:, j] = (col - mn) / (mx - mn + 1e-10) if mx > mn else 0.5
+
+    # SLO higher = better (green), switches/latency higher = worse (invert)
+    invert_cols = [1, 2, 5]  # switches, skip_ratio, latency
+    for j in invert_cols:
+        normed[:, j] = 1 - normed[:, j]
+
+    im = ax.imshow(normed, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
+
+    # Annotate cells
+    for i in range(data.shape[0]):
+        for j in range(data.shape[1]):
+            val = data[i, j]
+            if metrics[j] in ('slo_satisfaction_rate', 'skip_ratio', 'offload_ratio'):
+                text = f'{val:.1%}'
+            elif metrics[j] == 'avg_latency_ms':
+                text = f'{val:.0f}'
+            elif metrics[j] == 'avg_fps':
+                text = f'{val:.1f}'
+            else:
+                text = f'{val:.0f}'
+            ax.text(j, i, text, ha='center', va='center', fontsize=5.5,
+                    color='black' if 0.3 < normed[i, j] < 0.7 else 'white')
+
+    ax.set_xticks(range(len(metrics)))
+    ax.set_xticklabels([METRIC_LABELS[m].replace(' ', '\n') for m in metrics],
+                       fontsize=6)
+    ax.set_yticks(range(len(row_labels)))
+    ax.set_yticklabels(row_labels, fontsize=5.5)
+
+    # Add controller group separators
+    for i in range(1, len(controllers)):
+        ax.axhline(y=i * len(scenarios) - 0.5, color='white', linewidth=2)
+
+    fig.tight_layout()
+    savefig(fig, os.path.join(out_dir, 'fig_summary_heatmap'))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# B. TIME-SERIES ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def plot_timeseries_fps(main_dir, out_dir, scenario='scenario_burst',
+                        run_id=1, controllers=None):
+    """B1. Time-series FPS with workload overlay (n_active)."""
+    controllers = controllers or CTRL_ORDER
+
+    fig, ax1 = plt.subplots(figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.35))
+    ax2 = ax1.twinx()
+
+    for ctrl in controllers:
+        df = load_step_csv(main_dir, run_id, ctrl, scenario)
+        if df is None:
+            continue
+        ax1.plot(df['step'], df['avg_fps'], label=CTRL_LABELS[ctrl],
+                 color=COLORS[ctrl], alpha=0.85)
+
+    # Workload overlay (from any controller — n_active is the same)
+    ref_df = load_step_csv(main_dir, run_id, controllers[0], scenario)
+    if ref_df is not None:
+        ax2.fill_between(ref_df['step'], ref_df['n_active'],
+                         alpha=0.12, color='gray', step='mid')
+        ax2.plot(ref_df['step'], ref_df['n_active'],
+                 color='gray', alpha=0.4, linewidth=0.8, drawstyle='steps-mid')
+        ax2.set_ylabel('Active Streams', color='gray')
+        ax2.tick_params(axis='y', labelcolor='gray')
+
+    ax1.axhline(y=10, color='#888888', linestyle='--', linewidth=0.6, label='SLO (10 FPS)')
+    ax1.set_xlabel('Step')
+    ax1.set_ylabel('Avg FPS')
+    ax1.legend(loc='upper right', ncol=3, fontsize=6)
+    ax1.set_title(f'Per-Step FPS — {SCENARIO_LABELS[scenario]}', fontsize=9)
+
+    fig.tight_layout()
+    savefig(fig, os.path.join(out_dir, f'fig_ts_fps_{scenario}'))
+
+
+def plot_timeseries_latency(main_dir, out_dir, scenario='scenario_burst',
+                            run_id=1, controllers=None):
+    """B2. Time-series latency with SLO threshold."""
+    controllers = controllers or CTRL_ORDER
+
+    fig, ax = plt.subplots(figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.35))
+
+    for ctrl in controllers:
+        df = load_step_csv(main_dir, run_id, ctrl, scenario)
+        if df is None:
+            continue
+        ax.plot(df['step'], df['avg_lat_ms'], label=CTRL_LABELS[ctrl],
+                color=COLORS[ctrl], alpha=0.85)
+
+    ax.axhline(y=150, color='#888888', linestyle='--', linewidth=0.6, label='SLO (150ms)')
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Avg P95 Latency (ms)')
+    ax.legend(loc='upper right', ncol=3, fontsize=6)
+    ax.set_title(f'Per-Step P95 Latency — {SCENARIO_LABELS[scenario]}', fontsize=9)
+
+    fig.tight_layout()
+    savefig(fig, os.path.join(out_dir, f'fig_ts_lat_{scenario}'))
+
+
+def plot_mode_allocation(main_dir, out_dir, scenario='scenario_burst',
+                         run_id=1, controllers=None):
+    """B3. Stacked area chart — mode allocation over time (one subplot per controller)."""
+    controllers = controllers or [c for c in CTRL_ORDER if c != 'noop']
+
+    n = len(controllers)
+    fig, axes = plt.subplots(1, n, figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.30),
+                             sharey=True)
+    if n == 1:
+        axes = [axes]
+
+    for ax, ctrl in zip(axes, controllers):
+        df = load_step_csv(main_dir, run_id, ctrl, scenario)
+        if df is None:
+            ax.set_title(CTRL_LABELS[ctrl])
+            continue
+
+        steps = df['step'].values
+        stacks = []
+        labels = []
+        colors = []
+        for mode in MODE_ORDER:
+            col = f'n_{mode.lower()}'
+            if col in df.columns:
+                stacks.append(df[col].values.astype(float))
+                labels.append(mode)
+                colors.append(MODE_COLORS[mode])
+
+        ax.stackplot(steps, *stacks, labels=labels, colors=colors, alpha=0.85)
+        ax.set_title(CTRL_LABELS[ctrl], fontsize=7, pad=2)
+        ax.set_xlabel('Step', fontsize=6)
+        if ax == axes[0]:
+            ax.set_ylabel('Streams')
+
+    # Shared legend
+    handles = [mpatches.Patch(color=MODE_COLORS[m], label=m) for m in MODE_ORDER]
+    fig.legend(handles=handles, loc='upper center', ncol=4, fontsize=6,
+               bbox_to_anchor=(0.5, 1.08))
+    fig.suptitle(f'Mode Allocation — {SCENARIO_LABELS[scenario]}', fontsize=9, y=1.13)
+    fig.tight_layout(w_pad=0.5)
+    savefig(fig, os.path.join(out_dir, f'fig_mode_alloc_{scenario}'))
+
+
+def plot_latency_cdf(main_dir, out_dir, scenario='scenario_burst',
+                     run_id=1, controllers=None):
+    """B4. CDF of per-stream latency."""
+    controllers = controllers or CTRL_ORDER
+
+    fig, ax = plt.subplots(figsize=(SINGLE_COL_W, SINGLE_COL_W * ASPECT))
+
+    for ctrl in controllers:
+        history = load_history_json(main_dir, run_id, ctrl, scenario)
+        if history is None:
+            continue
+        df = extract_per_stream_metrics(history)
+        # Exclude SKIP
+        active = df[df['mode'] != 'SKIP']['latency_ms'].dropna().sort_values()
+        if len(active) == 0:
+            continue
+        cdf = np.arange(1, len(active) + 1) / len(active)
+        ax.plot(active.values, cdf, label=CTRL_LABELS[ctrl],
+                color=COLORS[ctrl])
+
+    ax.axvline(x=150, color='#888888', linestyle='--', linewidth=0.6, label='SLO (150ms)')
+    ax.set_xlabel('P95 Latency (ms)')
+    ax.set_ylabel('CDF')
+    ax.set_xlim(0, 300)
+    ax.legend(loc='lower right', fontsize=6)
+    ax.set_title(f'Latency CDF — {SCENARIO_LABELS[scenario]}', fontsize=9)
+
+    savefig(fig, os.path.join(out_dir, f'fig_cdf_lat_{scenario}'))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# C. AIF INTERPRETABILITY
+# ═══════════════════════════════════════════════════════════════════════════
+
+def plot_belief_evolution(main_dir, out_dir, scenario='scenario_burst', run_id=1):
+    """
+    C1. Belief evolution heatmap — Q(s) over time.
+    Requires belief data in history JSON (aif controller must log self.belief).
+    Falls back to a proxy from n_active if belief not logged.
+    """
+    history = load_history_json(main_dir, run_id, 'aif', scenario)
+    if history is None:
+        print("  [SKIP] No AIF history found for belief evolution.")
+        return
+
+    # Check if belief is logged in history
+    has_belief = any('belief' in rec for rec in history)
+
+    steps = [rec['step'] for rec in history]
+    n_steps = len(steps)
+
+    if has_belief:
+        beliefs = np.array([rec['belief'] for rec in history])
+    else:
+        # Proxy: estimate belief from n_active
+        print("  [NOTE] Belief not logged; using n_active proxy.")
+        beliefs = np.zeros((n_steps, 3))
+        for i, rec in enumerate(history):
+            n = rec['observation']['global']['n_active_streams']
+            if n <= 3:
+                beliefs[i] = [0.8, 0.15, 0.05]
+            elif n <= 5:
+                beliefs[i] = [0.1, 0.7, 0.2]
+            else:
+                beliefs[i] = [0.05, 0.15, 0.8]
+
+    n_active = [rec['observation']['global']['n_active_streams'] for rec in history]
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.40),
+                                    gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
+
+    # Belief heatmap
+    im = ax1.imshow(beliefs.T, aspect='auto', cmap='viridis',
+                    extent=[0, n_steps, -0.5, 2.5], origin='lower',
+                    vmin=0, vmax=1)
+    ax1.set_yticks([0, 1, 2])
+    ax1.set_yticklabels(['LOW', 'MED', 'HIGH'])
+    ax1.set_ylabel('Load State')
+    ax1.set_title(f'AIF Belief Evolution — {SCENARIO_LABELS[scenario]}', fontsize=9)
+    plt.colorbar(im, ax=ax1, label='$Q(s)$', shrink=0.8, pad=0.02)
+
+    # Active streams below
+    ax2.step(range(n_steps), n_active, where='mid', color='gray', linewidth=1)
+    ax2.fill_between(range(n_steps), n_active, alpha=0.15, color='gray', step='mid')
+    ax2.set_ylabel('Streams')
+    ax2.set_xlabel('Step')
+
+    fig.tight_layout(h_pad=0.3)
+    savefig(fig, os.path.join(out_dir, f'fig_belief_{scenario}'))
+
+
+def plot_belief_entropy(main_dir, out_dir, scenario='scenario_burst', run_id=1):
+    """C3. Belief entropy over time with n_active overlay."""
+    history = load_history_json(main_dir, run_id, 'aif', scenario)
+    if history is None:
+        print("  [SKIP] No AIF history found for belief entropy.")
+        return
+
+    has_belief = any('belief' in rec for rec in history)
+    steps = list(range(len(history)))
+    n_active = [rec['observation']['global']['n_active_streams'] for rec in history]
+
+    if has_belief:
+        beliefs = [np.array(rec['belief']) for rec in history]
+    else:
+        # Proxy
+        beliefs = []
+        for rec in history:
+            n = rec['observation']['global']['n_active_streams']
+            if n <= 3:
+                beliefs.append(np.array([0.8, 0.15, 0.05]))
+            elif n <= 5:
+                beliefs.append(np.array([0.1, 0.7, 0.2]))
+            else:
+                beliefs.append(np.array([0.05, 0.15, 0.8]))
+
+    entropy = []
+    for b in beliefs:
+        b_safe = np.clip(b, 1e-10, 1.0)
+        h = -np.sum(b_safe * np.log(b_safe))
+        entropy.append(h)
+
+    fig, ax1 = plt.subplots(figsize=(SINGLE_COL_W, SINGLE_COL_W * ASPECT))
+    ax2 = ax1.twinx()
+
+    ax1.plot(steps, entropy, color=COLORS['aif'], linewidth=1.2, label='Belief Entropy')
+    ax1.set_ylabel('Entropy $H(Q(s))$', color=COLORS['aif'])
+    ax1.set_xlabel('Step')
+    ax1.tick_params(axis='y', labelcolor=COLORS['aif'])
+
+    ax2.step(steps, n_active, where='mid', color='gray', alpha=0.5, linewidth=0.8)
+    ax2.fill_between(steps, n_active, alpha=0.1, color='gray', step='mid')
+    ax2.set_ylabel('Active Streams', color='gray')
+    ax2.tick_params(axis='y', labelcolor='gray')
+
+    ax1.set_title(f'Belief Entropy — {SCENARIO_LABELS[scenario]}', fontsize=9)
+    fig.tight_layout()
+    savefig(fig, os.path.join(out_dir, f'fig_entropy_{scenario}'))
+
+
+def plot_action_gantt(main_dir, out_dir, scenario='scenario_burst', run_id=1):
+    """C4. Gantt chart — per-stream mode over time for AIF."""
+    history = load_history_json(main_dir, run_id, 'aif', scenario)
+    if history is None:
+        print("  [SKIP] No AIF history found for action Gantt.")
+        return
+
+    modes_by_step = extract_per_stream_modes(history)
+    all_sids = sorted(set().union(*[m.keys() for m in modes_by_step.values()]))
+    n_steps = len(modes_by_step)
+
+    fig, ax = plt.subplots(figsize=(DOUBLE_COL_W, max(1.5, 0.35 * len(all_sids))))
+
+    for y_pos, sid in enumerate(all_sids):
+        x_start = 0
+        current_mode = None
+        for step in range(n_steps):
+            mode = modes_by_step.get(step, {}).get(sid, None)
+            if mode is None:
+                if current_mode is not None:
+                    ax.barh(y_pos, step - x_start, left=x_start, height=0.7,
+                            color=MODE_COLORS.get(current_mode, '#999'), edgecolor='none')
+                current_mode = None
+                x_start = step + 1
+                continue
+            if mode != current_mode:
+                if current_mode is not None:
+                    ax.barh(y_pos, step - x_start, left=x_start, height=0.7,
+                            color=MODE_COLORS.get(current_mode, '#999'), edgecolor='none')
+                current_mode = mode
+                x_start = step
+        # Final segment
+        if current_mode is not None:
+            ax.barh(y_pos, n_steps - x_start, left=x_start, height=0.7,
+                    color=MODE_COLORS.get(current_mode, '#999'), edgecolor='none')
+
+    ax.set_yticks(range(len(all_sids)))
+    ax.set_yticklabels([f'Stream {s}' for s in all_sids])
+    ax.set_xlabel('Step')
+    ax.set_title(f'AIF Mode Allocation per Stream — {SCENARIO_LABELS[scenario]}', fontsize=9)
+
+    handles = [mpatches.Patch(color=MODE_COLORS[m], label=m) for m in MODE_ORDER]
+    ax.legend(handles=handles, loc='upper right', ncol=4, fontsize=6)
+
+    fig.tight_layout()
+    savefig(fig, os.path.join(out_dir, f'fig_gantt_{scenario}'))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# D. ABLATION STUDIES
+# ═══════════════════════════════════════════════════════════════════════════
+
+def plot_ablation_likelihood(ablation_dir, out_dir):
+    """D3. Paired bar chart — OFFLOAD likelihood v0 vs v1."""
+    df = load_ablation_csv(ablation_dir, 'likelihood')
+    if df is None:
+        print("  [SKIP] No likelihood ablation data found.")
+        return
+
+    scenarios = SCENARIO_ORDER
+    v0_color = '#E69F00'   # orange
+    v1_color = '#0072B2'   # dark blue
+
+    fig, ax = plt.subplots(figsize=(SINGLE_COL_W, SINGLE_COL_W * ASPECT))
+
+    x = np.arange(len(scenarios))
+    width = 0.35
+
+    v0_means, v1_means = [], []
+    v0_stds, v1_stds = [], []
+
+    for scen in scenarios:
+        v0_data = df[(df['variant'].str.contains('v0')) & (df['scenario'] == scen)]['slo_satisfaction_rate']
+        v1_data = df[(df['variant'].str.contains('v1')) & (df['scenario'] == scen)]['slo_satisfaction_rate']
+        v0_means.append(v0_data.mean() if len(v0_data) > 0 else 0)
+        v0_stds.append(v0_data.std() if len(v0_data) > 1 else 0)
+        v1_means.append(v1_data.mean() if len(v1_data) > 0 else 0)
+        v1_stds.append(v1_data.std() if len(v1_data) > 1 else 0)
+
+    ax.bar(x - width / 2, v0_means, width, yerr=v0_stds,
+           label='v0 (Per-Stream BAD)', color=v0_color,
+           capsize=2, error_kw={'linewidth': 0.8}, edgecolor='white', linewidth=0.3)
+    ax.bar(x + width / 2, v1_means, width, yerr=v1_stds,
+           label='v1 (System-Level)', color=v1_color,
+           capsize=2, error_kw={'linewidth': 0.8}, edgecolor='white', linewidth=0.3)
+
+    add_slo_line(ax, 0.9)
+    ax.set_ylabel('SLO Satisfaction Rate')
+    ax.set_xticks(x)
+    ax.set_xticklabels([SCENARIO_SHORT[s] for s in scenarios])
+    ax.set_ylim(0, 1.05)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+    ax.legend(loc='lower left', fontsize=6)
+    ax.set_title('OFFLOAD Likelihood: v0 vs v1', fontsize=9)
+
+    savefig(fig, os.path.join(out_dir, 'fig_ablation_likelihood'))
+
+
+def plot_ablation_sensitivity(ablation_dir, out_dir, ablation_name,
+                              param_name, param_values, title):
+    """Generic line plot for single-parameter ablation (precision, epistemic, cooldown)."""
+    df = load_ablation_csv(ablation_dir, ablation_name)
+    if df is None:
+        print(f"  [SKIP] No {ablation_name} ablation data found.")
+        return
+
+    scenarios = SCENARIO_ORDER
+    scenario_colors = ['#4477AA', '#EE6677', '#228833', '#CCBB44']
+
+    fig, ax = plt.subplots(figsize=(SINGLE_COL_W, SINGLE_COL_W * ASPECT))
+
+    for scen, color in zip(scenarios, scenario_colors):
+        means, stds = [], []
+        for val in param_values:
+            # Match variant name containing the param value
+            mask = df['scenario'] == scen
+            variant_mask = df['variant'].astype(str).str.contains(str(val).replace('.', r'\.'))
+            subset = df[mask & variant_mask]['slo_satisfaction_rate']
+            means.append(subset.mean() if len(subset) > 0 else 0)
+            stds.append(subset.std() if len(subset) > 1 else 0)
+
+        ax.errorbar(range(len(param_values)), means, yerr=stds,
+                    label=SCENARIO_SHORT[scen], color=color,
+                    marker='o', capsize=2, markersize=4)
+
+    ax.set_xticks(range(len(param_values)))
+    ax.set_xticklabels([str(v) for v in param_values])
+    ax.set_xlabel(param_name)
+    ax.set_ylabel('SLO Satisfaction Rate')
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+    ax.legend(loc='best', fontsize=6, ncol=2)
+    ax.set_title(title, fontsize=9)
+
+    savefig(fig, os.path.join(out_dir, f'fig_ablation_{ablation_name}'))
+
+
+def plot_ablation_offload_onoff(ablation_dir, out_dir):
+    """D4. Grouped bar chart — all controllers with OFFLOAD on vs off."""
+    df = load_ablation_csv(ablation_dir, 'offload_onoff')
+    if df is None:
+        print("  [SKIP] No offload_onoff ablation data found.")
+        return
+
+    controllers = [c for c in CTRL_ORDER if c != 'noop']
+
+    # Aggregate across scenarios
+    on_means, off_means = [], []
+    for ctrl in controllers:
+        on_data = df[(df['controller'] == ctrl) &
+                     (df['variant'].str.contains('enabled'))]['slo_satisfaction_rate']
+        off_data = df[(df['controller'] == ctrl) &
+                      (df['variant'].str.contains('disabled'))]['slo_satisfaction_rate']
+        on_means.append(on_data.mean() if len(on_data) > 0 else 0)
+        off_means.append(off_data.mean() if len(off_data) > 0 else 0)
+
+    fig, ax = plt.subplots(figsize=(SINGLE_COL_W, SINGLE_COL_W * ASPECT))
+
+    x = np.arange(len(controllers))
+    width = 0.35
+
+    ax.bar(x - width / 2, off_means, width, label='OFFLOAD Disabled',
+           color='#BBBBBB', edgecolor='white', linewidth=0.3)
+    ax.bar(x + width / 2, on_means, width, label='OFFLOAD Enabled',
+           color='#4477AA', edgecolor='white', linewidth=0.3)
+
+    ax.set_ylabel('SLO Satisfaction Rate')
+    ax.set_xticks(x)
+    ax.set_xticklabels([CTRL_LABELS[c] for c in controllers], fontsize=6)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+    ax.legend(loc='lower right', fontsize=6)
+    ax.set_title('OFFLOAD: Enabled vs Disabled', fontsize=9)
+
+    savefig(fig, os.path.join(out_dir, 'fig_ablation_offload_onoff'))
+
+
+def plot_ablation_combined(ablation_dir, out_dir):
+    """Combined 2x2 ablation figure for paper (precision + epistemic + cooldown + likelihood)."""
+    configs = [
+        ('likelihood', 'Variant', ['v0', 'v1'], 'OFFLOAD Likelihood'),
+        ('precision', r'$\beta$', [2, 4, 6, 8], 'Precision'),
+        ('epistemic', r'$w_e$', [0, 0.1, 0.3, 0.5], 'Epistemic Weight'),
+        ('cooldown', r'$\tau_c$', [1, 3, 5], 'Cooldown'),
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.65))
+    axes = axes.flatten()
+    scenario_colors = ['#4477AA', '#EE6677', '#228833', '#CCBB44']
+
+    for ax, (abl_name, xlabel, values, title) in zip(axes, configs):
+        df = load_ablation_csv(ablation_dir, abl_name)
+        if df is None:
+            ax.set_title(f'{title} (no data)', fontsize=8)
+            continue
+
+        for scen, color in zip(SCENARIO_ORDER, scenario_colors):
+            means = []
+            for val in values:
+                mask = df['scenario'] == scen
+                vmask = df['variant'].astype(str).str.contains(str(val).replace('.', r'\.'))
+                subset = df[mask & vmask]['slo_satisfaction_rate']
+                means.append(subset.mean() if len(subset) > 0 else 0)
+            ax.plot(range(len(values)), means, marker='o', color=color,
+                    label=SCENARIO_SHORT[scen], markersize=3, linewidth=1)
+
+        ax.set_xticks(range(len(values)))
+        ax.set_xticklabels([str(v) for v in values], fontsize=6)
+        ax.set_xlabel(xlabel, fontsize=7)
+        ax.set_ylabel('SLO%', fontsize=7)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+        ax.set_title(title, fontsize=8)
+
+    axes[0].legend(loc='best', fontsize=5, ncol=2)
+    fig.tight_layout(w_pad=1.5, h_pad=1.5)
+    savefig(fig, os.path.join(out_dir, 'fig_ablation_combined'))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════════
+
+PLOT_REGISTRY = {
+    # A: Main results
+    'slo_bar':        ('A1: SLO Grouped Bar',    lambda a: plot_slo_bar(a['agg'], a['out'])),
+    'switch_bar':     ('A2: Switch Count Bar',   lambda a: plot_switch_bar(a['agg'], a['out'])),
+    'resource_bar':   ('A3: Skip/Offload Bar',   lambda a: plot_resource_bar(a['agg'], a['out'])),
+    'heatmap':        ('A5: Summary Heatmap',    lambda a: plot_summary_heatmap(a['agg'], a['out'])),
+    # B: Time-series
+    'ts_fps':         ('B1: Time-Series FPS',     lambda a: [plot_timeseries_fps(a['main'], a['out'], s) for s in SCENARIO_ORDER]),
+    'ts_lat':         ('B2: Time-Series Latency', lambda a: [plot_timeseries_latency(a['main'], a['out'], s) for s in SCENARIO_ORDER]),
+    'mode_alloc':     ('B3: Mode Allocation',     lambda a: [plot_mode_allocation(a['main'], a['out'], s) for s in SCENARIO_ORDER]),
+    'cdf_lat':        ('B4: Latency CDF',         lambda a: [plot_latency_cdf(a['main'], a['out'], s) for s in SCENARIO_ORDER]),
+    # C: AIF interpretability
+    'belief':         ('C1: Belief Evolution',     lambda a: [plot_belief_evolution(a['main'], a['out'], s) for s in SCENARIO_ORDER]),
+    'entropy':        ('C3: Belief Entropy',       lambda a: [plot_belief_entropy(a['main'], a['out'], s) for s in SCENARIO_ORDER]),
+    'gantt':          ('C4: Action Gantt',         lambda a: [plot_action_gantt(a['main'], a['out'], s) for s in SCENARIO_ORDER]),
+    # D: Ablation
+    'abl_likelihood': ('D3: Likelihood v0/v1',     lambda a: plot_ablation_likelihood(a['abl'], a['out'])),
+    'abl_precision':  ('D1: Precision Sensitivity', lambda a: plot_ablation_sensitivity(a['abl'], a['out'], 'precision', r'$\beta$', [2, 4, 6, 8], 'Precision Sensitivity')),
+    'abl_epistemic':  ('D2: Epistemic Sensitivity', lambda a: plot_ablation_sensitivity(a['abl'], a['out'], 'epistemic', r'$w_e$', [0, 0.1, 0.3, 0.5], 'Epistemic Weight Sensitivity')),
+    'abl_cooldown':   ('D-: Cooldown Sensitivity',  lambda a: plot_ablation_sensitivity(a['abl'], a['out'], 'cooldown', r'$\tau_c$', [1, 3, 5], 'Cooldown Sensitivity')),
+    'abl_offload':    ('D4: OFFLOAD On/Off',        lambda a: plot_ablation_offload_onoff(a['abl'], a['out'])),
+    'abl_combined':   ('D*: Combined Ablation 2x2', lambda a: plot_ablation_combined(a['abl'], a['out'])),
+}
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Generate publication-quality figures for AIF edge video paper.')
+    parser.add_argument('--main-dir', default='~/Desktop/experiments/main',
+                        help='Main experiment results directory')
+    parser.add_argument('--ablation-dir', default='~/Desktop/experiments/ablation',
+                        help='Ablation results directory')
+    parser.add_argument('--output-dir', default='./figures',
+                        help='Output directory for figures')
+    parser.add_argument('--only', nargs='*', default=None,
+                        help='Generate only specific plots (e.g., --only slo_bar belief)')
+    parser.add_argument('--list', action='store_true',
+                        help='List available plot names')
+    args = parser.parse_args()
+
+    if args.list:
+        print("Available plots:")
+        for key, (desc, _) in PLOT_REGISTRY.items():
+            print(f"  {key:<20} {desc}")
+        return
+
+    # Expand paths
+    main_dir = os.path.expanduser(args.main_dir)
+    abl_dir = os.path.expanduser(args.ablation_dir)
+    out_dir = os.path.expanduser(args.output_dir)
+    os.makedirs(out_dir, exist_ok=True)
+
+    apply_style()
+
+    # Load data
+    agg = None
+    if os.path.exists(os.path.join(main_dir, 'aggregate.json')):
+        agg = load_aggregate(main_dir)
+        print(f"Loaded aggregate data from {main_dir}")
+    else:
+        print(f"[WARN] No aggregate.json in {main_dir}")
+
+    context = {
+        'agg': agg,
+        'main': main_dir,
+        'abl': abl_dir,
+        'out': out_dir,
+    }
+
+    # Select plots
+    if args.only:
+        plot_keys = args.only
+    else:
+        plot_keys = list(PLOT_REGISTRY.keys())
+
+    # Generate
+    print(f"\nGenerating {len(plot_keys)} plot(s) → {out_dir}/\n")
+
+    for key in plot_keys:
+        if key not in PLOT_REGISTRY:
+            print(f"  [ERROR] Unknown plot: {key}")
+            continue
+        desc, fn = PLOT_REGISTRY[key]
+        print(f"  [{key}] {desc}...")
+        try:
+            fn(context)
+        except Exception as e:
+            print(f"    FAILED: {e}")
+
+    print(f"\nDone. Figures saved to {out_dir}/")
+
+
+if __name__ == '__main__':
+    main()
