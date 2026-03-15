@@ -1,0 +1,72 @@
+# Action Space Definition
+# Frozen after empirical profiling on Jetson Orin (JetPack R36.5, YOLOv8n)
+
+# --- Mode set ---
+modes:
+  FULL:
+    description: "Infer every frame on Jetson GPU"
+    inference: true
+    location: local
+    detection_frequency: 1        # K=1, every frame
+    input_resolution: [1280, 720]
+    gpu_cost: high
+
+  LITE:
+    description: "Infer every frame at reduced model input size (imgsz=320)"
+    inference: true
+    location: local
+    detection_frequency: 1        # every frame, same as FULL
+    input_resolution: [1280, 720] # video input unchanged
+    model_imgsz: 320              # YOLO internal letterbox to 320x320
+    gpu_cost: medium
+    # Empirical: throughput ceiling 75 FPS (vs FULL 56 FPS)
+    # SLO boundary: 7 streams (vs FULL 5 streams)
+    # Detection quality: 4.0 boxes/frame (vs FULL 7.1, -44%)
+
+  SKIP:
+    description: "No inference, downsample and passthrough only"
+    inference: false
+    location: local
+    detection_frequency: 0        # no detection
+    output_resolution: [426, 240] # graceful degradation, not hard drop
+    gpu_cost: none
+
+  OFFLOAD:
+    description: "Send frame to Nano node for inference via HTTP"
+    inference: true
+    location: nano
+    detection_frequency: 1
+    input_resolution: [1280, 720]
+    gpu_cost: none                # zero local Orin GPU cost
+    enabled: true
+    urls:
+      - "http://192.168.1.52:8765/infer"   # nano2
+      - "http://192.168.1.53:8765/infer"   # nano3
+    imgsz: 640
+
+# --- Action definition ---
+# a_t = (stream_id, mode) or NO-OP
+# |A| = |modes| * N_streams + 1
+action_format: "(i, m) where i in {0..N-1}, m in modes"
+max_stream_changes_per_step: 1
+
+# --- LITE parameters ---
+# LITE = reduced imgsz (320 vs FULL 640)
+# NOT skip-frame (K=3 proven ineffective due to batch desync)
+lite_imgsz: 320
+full_imgsz: 640
+imgsz_ablation_range: [256, 320, 416, 480, 640]
+
+# --- Control timing ---
+control_interval_s: 1.0           # T = 1 second (30-frame window at 30 FPS)
+control_interval_ablation: [0.5, 1.0, 2.0]
+
+# --- Model ---
+model: "yolov8n"
+model_input_size: [640, 640]      # internal letterbox, independent of input resolution
+model_ablation: ["yolov8n", "yolov8s"]
+
+# --- Inference architecture ---
+inference_mode: batch             # batch inference (not serial or dual)
+# Serial and Dual retained as ablation baselines
+inference_ablation: [serial, batch, dual]

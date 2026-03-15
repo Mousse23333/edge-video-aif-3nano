@@ -1,0 +1,148 @@
+# Workload Scenarios for Experiments
+# Defines dynamic stream patterns that drive the need for adaptive control.
+# All controllers (heuristic, AIF, RL) face identical scenarios.
+
+# --- Video sources ---
+video_sources:
+  traffic_720p:
+    path: "/data/traffic_720p.mp4"
+    resolution: [1280, 720]
+    fps: 30
+    duration_s: 150
+    loop: true
+    complexity: medium            # moderate detection count
+
+  traffic_480p:
+    path: "/data/traffic_480p.mp4"
+    resolution: [854, 480]
+    fps: 30
+    duration_s: 150
+    loop: true
+    complexity: medium
+
+# --- Scenario 1: Gradual ramp-up ---
+# Tests: Can the controller gracefully degrade as load increases?
+scenario_ramp_up:
+  description: "Streams added one by one until system is overloaded"
+  duration_s: 60
+  events:
+    - { t: 0,  action: add_stream,    stream_id: 0, source: traffic_720p }
+    - { t: 0,  action: add_stream,    stream_id: 1, source: traffic_720p }
+    - { t: 0,  action: add_stream,    stream_id: 2, source: traffic_720p }
+    - { t: 10, action: add_stream,    stream_id: 3, source: traffic_720p }
+    - { t: 20, action: add_stream,    stream_id: 4, source: traffic_720p }
+    - { t: 30, action: add_stream,    stream_id: 5, source: traffic_720p }
+    - { t: 40, action: add_stream,    stream_id: 6, source: traffic_720p }
+    # Expect: at ~5-6 streams, controller must start using LITE/SKIP
+  expected_behavior:
+    - "0-20s: all streams FULL, SLO satisfied"
+    - "20-30s: 5 streams, FULL boundary, controller may preemptively switch"
+    - "30-60s: 6-7 streams, must use LITE/SKIP to maintain SLO"
+
+# --- Scenario 2: Burst and recover ---
+# Tests: Adaptation speed and recovery from overload
+scenario_burst:
+  description: "Stable load, sudden burst of extra streams, then back to normal"
+  duration_s: 60
+  events:
+    - { t: 0,  action: add_stream,    stream_id: 0, source: traffic_720p }
+    - { t: 0,  action: add_stream,    stream_id: 1, source: traffic_720p }
+    - { t: 0,  action: add_stream,    stream_id: 2, source: traffic_720p }
+    - { t: 0,  action: add_stream,    stream_id: 3, source: traffic_720p }
+    # Burst at t=15
+    - { t: 15, action: add_stream,    stream_id: 4, source: traffic_720p }
+    - { t: 15, action: add_stream,    stream_id: 5, source: traffic_720p }
+    - { t: 15, action: add_stream,    stream_id: 6, source: traffic_720p }
+    # Recover at t=35
+    - { t: 35, action: remove_stream, stream_id: 4 }
+    - { t: 35, action: remove_stream, stream_id: 5 }
+    - { t: 35, action: remove_stream, stream_id: 6 }
+  expected_behavior:
+    - "0-15s: 4 streams FULL, stable, SLO met"
+    - "15-17s: transient — controller detects overload"
+    - "17-35s: adapted — some streams in LITE/SKIP"
+    - "35-37s: transient — controller detects spare capacity"
+    - "37-60s: recovered — streams promoted back to FULL"
+  metrics_of_interest:
+    - "Time to first mode change after burst (reaction speed)"
+    - "SLO violation count during transient"
+    - "Time to return all streams to FULL after burst ends"
+
+# --- Scenario 3: Steady overload ---
+# Tests: Stable allocation under sustained pressure
+scenario_steady_overload:
+  description: "6 streams sustained, system must find optimal mode mix"
+  duration_s: 90
+  events:
+    - { t: 0, action: add_stream, stream_id: 0, source: traffic_720p }
+    - { t: 0, action: add_stream, stream_id: 1, source: traffic_720p }
+    - { t: 0, action: add_stream, stream_id: 2, source: traffic_720p }
+    - { t: 0, action: add_stream, stream_id: 3, source: traffic_720p }
+    - { t: 0, action: add_stream, stream_id: 4, source: traffic_720p }
+    - { t: 0, action: add_stream, stream_id: 5, source: traffic_720p }
+  expected_behavior:
+    - "Controller must find a stable mix (e.g., 4 FULL + 1 LITE + 1 SKIP)"
+    - "Should converge within 10-15 control windows"
+    - "AIF should explore less than RL once converged"
+
+# --- Scenario 4: Oscillating load ---
+# Tests: Robustness to periodic load changes, hysteresis effectiveness
+scenario_oscillating:
+  description: "Streams added and removed periodically"
+  duration_s: 120
+  events:
+    # Base: 3 streams always present
+    - { t: 0,  action: add_stream,    stream_id: 0, source: traffic_720p }
+    - { t: 0,  action: add_stream,    stream_id: 1, source: traffic_720p }
+    - { t: 0,  action: add_stream,    stream_id: 2, source: traffic_720p }
+    # Wave 1: add 3 more
+    - { t: 10, action: add_stream,    stream_id: 3, source: traffic_720p }
+    - { t: 10, action: add_stream,    stream_id: 4, source: traffic_720p }
+    - { t: 10, action: add_stream,    stream_id: 5, source: traffic_720p }
+    # Wave 1: remove extras
+    - { t: 30, action: remove_stream, stream_id: 3 }
+    - { t: 30, action: remove_stream, stream_id: 4 }
+    - { t: 30, action: remove_stream, stream_id: 5 }
+    # Wave 2: add again
+    - { t: 50, action: add_stream,    stream_id: 3, source: traffic_720p }
+    - { t: 50, action: add_stream,    stream_id: 4, source: traffic_720p }
+    - { t: 50, action: add_stream,    stream_id: 5, source: traffic_720p }
+    # Wave 2: remove
+    - { t: 70, action: remove_stream, stream_id: 3 }
+    - { t: 70, action: remove_stream, stream_id: 4 }
+    - { t: 70, action: remove_stream, stream_id: 5 }
+    # Wave 3: add with extra
+    - { t: 90,  action: add_stream,    stream_id: 3, source: traffic_720p }
+    - { t: 90,  action: add_stream,    stream_id: 4, source: traffic_720p }
+    - { t: 90,  action: add_stream,    stream_id: 5, source: traffic_720p }
+    - { t: 90,  action: add_stream,    stream_id: 6, source: traffic_720p }
+    - { t: 110, action: remove_stream, stream_id: 3 }
+    - { t: 110, action: remove_stream, stream_id: 4 }
+    - { t: 110, action: remove_stream, stream_id: 5 }
+    - { t: 110, action: remove_stream, stream_id: 6 }
+  expected_behavior:
+    - "Controller should learn the pattern by wave 2"
+    - "AIF advantage: belief carries forward, anticipates next wave"
+    - "Heuristic reacts identically each wave (no memory)"
+    - "min_dwell prevents SKIP oscillation"
+
+# --- Evaluation metrics (across all scenarios) ---
+evaluation_metrics:
+  slo:
+    - slo_satisfaction_rate        # % of (stream, window) pairs meeting both SLOs
+    - cumulative_violations        # total count of SLO violations
+    - worst_stream_fps             # min FPS across all streams at any point
+    - worst_stream_p95_ms          # max P95 across all streams at any point
+
+  adaptation:
+    - reaction_time_windows        # windows between load change and first mode switch
+    - convergence_time_windows     # windows until mode allocation stabilizes
+    - mode_switch_count            # total mode changes (lower = more stable)
+
+  quality:
+    - detection_coverage           # % of frames with active detection (non-SKIP)
+    - skip_ratio_avg               # average fraction of streams in SKIP
+
+  efficiency:
+    - gpu_util_avg                 # overall GPU utilization
+    - total_throughput_fps         # aggregate FPS across all streams

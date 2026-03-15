@@ -1,0 +1,104 @@
+# Switch Cost Configuration
+# Measured on Jetson Orin, 4 streams, Batch inference, 720p, YOLOv8n
+# Each entry: from_mode -> to_mode
+
+transitions:
+  FULL->LITE:
+    transient_peak_ms: 130.4
+    steady_latency_ms: 42.4
+    stabilization_frames: 1
+    bystander_fps_delta: +3.3     # other streams benefit (less GPU contention)
+    penalty_level: low            # for heuristic
+    penalty_score: 1              # numeric for RL reward shaping
+
+  LITE->FULL:
+    transient_peak_ms: 148.0
+    steady_latency_ms: 76.4
+    stabilization_frames: 0
+    bystander_fps_delta: +5.4
+    penalty_level: low
+    penalty_score: 1
+
+  FULL->SKIP:
+    transient_peak_ms: 13.4
+    steady_latency_ms: 5.2
+    stabilization_frames: 2
+    bystander_fps_delta: +5.9
+    penalty_level: very_low
+    penalty_score: 0
+
+  SKIP->FULL:
+    transient_peak_ms: 293.1      # cold-start spike
+    steady_latency_ms: 79.7
+    stabilization_frames: 2
+    bystander_fps_delta: +18.1
+    penalty_level: high
+    penalty_score: 4
+
+  LITE->SKIP:
+    transient_peak_ms: 14.1
+    steady_latency_ms: 5.0
+    stabilization_frames: 3
+    bystander_fps_delta: +7.9
+    penalty_level: very_low
+    penalty_score: 0
+
+  SKIP->LITE:
+    transient_peak_ms: 226.7      # cold-start spike (less severe than SKIP->FULL)
+    steady_latency_ms: 40.9
+    stabilization_frames: 5
+    bystander_fps_delta: +16.7
+    penalty_level: medium_high
+    penalty_score: 3
+
+  # OFFLOAD transitions - placeholder, to be measured when Desktop joins
+  FULL->OFFLOAD:
+    transient_peak_ms: null
+    penalty_level: medium         # estimated: network setup cost
+    penalty_score: 2
+    measured: false
+
+  OFFLOAD->FULL:
+    transient_peak_ms: null
+    penalty_level: medium         # estimated: re-entering local batch queue
+    penalty_score: 2
+    measured: false
+
+  LITE->OFFLOAD:
+    transient_peak_ms: null
+    penalty_level: medium
+    penalty_score: 2
+    measured: false
+
+  OFFLOAD->LITE:
+    transient_peak_ms: null
+    penalty_level: medium
+    penalty_score: 2
+    measured: false
+
+  SKIP->OFFLOAD:
+    transient_peak_ms: null
+    penalty_level: medium_high    # estimated: network + cold-start
+    penalty_score: 3
+    measured: false
+
+  OFFLOAD->SKIP:
+    transient_peak_ms: null
+    penalty_level: very_low
+    penalty_score: 0
+    measured: false
+
+# --- Minimum dwell time (in control windows) ---
+# Constraint: after entering a mode, must stay for at least this many windows
+# before switching OUT of it. Prevents oscillation.
+min_dwell_before_exit:
+  FULL: 1
+  LITE: 1
+  SKIP: 2       # SKIP->any has cold-start cost, avoid rapid in/out
+  OFFLOAD: 1
+
+# --- Key insight ---
+# Downgrade is cheap, upgrade is expensive.
+# FULL/LITE -> SKIP: near-zero cost
+# SKIP -> FULL/LITE: 200-300ms cold-start spike
+# FULL <-> LITE: minimal cost, essentially free

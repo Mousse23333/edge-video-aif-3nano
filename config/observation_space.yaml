@@ -1,0 +1,64 @@
+# Observation Space Definition
+# All baselines (heuristic, AIF, RL) receive identical observations.
+
+# --- Per-stream observations (one per active stream) ---
+per_stream:
+  fps_avg:
+    description: "Average FPS over the last control window"
+    unit: "frames/s"
+    range: [0, 200]
+    source: "frame timestamps in window"
+
+  latency_p95_ms:
+    description: "95th percentile end-to-end latency in window"
+    unit: "ms"
+    range: [0, 500]
+    source: "per-frame t_total_ms"
+
+  current_mode:
+    description: "Active processing mode"
+    type: categorical
+    values: [FULL, LITE, SKIP, OFFLOAD]
+
+  detection_count_avg:
+    description: "Average detection box count per inferred frame"
+    unit: "count"
+    range: [0, 100]
+    source: "YOLO output box count"
+    note: "Proxy for scene complexity; 0 when mode=SKIP"
+
+  frames_in_current_mode:
+    description: "How many control windows this stream has been in current mode"
+    unit: "windows"
+    range: [0, inf]
+    note: "Used for min_dwell enforcement"
+
+# --- Global observations (one per control step) ---
+global:
+  gpu_util_avg:
+    description: "Average GPU utilization over the last control window"
+    unit: "percent"
+    range: [0, 100]
+    source: "sysfs gpu load, sampled at 4Hz"
+
+  n_active_streams:
+    description: "Number of currently active video streams"
+    unit: "count"
+    range: [1, 12]
+
+  mem_used_mb:
+    description: "System memory usage"
+    unit: "MB"
+    range: [0, 8000]
+
+  n_streams_by_mode:
+    description: "Count of streams in each mode"
+    type: dict
+    keys: [FULL, LITE, SKIP, OFFLOAD]
+    note: "Derived from per-stream current_mode"
+
+# --- Observation aggregation ---
+aggregation:
+  window_duration_s: 1.0          # matches control_interval_s
+  sample_rate_gpu_hz: 4           # GPU util sampled 4x per window
+  latency_percentile: 95          # which percentile to report

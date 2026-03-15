@@ -1,0 +1,66 @@
+# SLO (Service Level Objectives) Configuration
+# Defines constraints and preferences for the control system.
+
+# --- Hard constraints (heuristic uses directly) ---
+hard_constraints:
+  p95_latency_ms:
+    threshold: 150
+    description: "95th percentile per-stream latency must be below this"
+    applies_to: [FULL, LITE, OFFLOAD]  # SKIP is exempt (no inference)
+    empirical_basis: "5-stream FULL boundary P95 = 127ms, with margin"
+
+  min_fps:
+    threshold: 10
+    description: "Per-stream FPS must be at or above this"
+    applies_to: [FULL, LITE, OFFLOAD]
+    empirical_basis: "5-stream FULL boundary FPS = 11.1"
+
+  max_skip_ratio:
+    threshold: 0.3
+    description: "At most 30% of active streams may be in SKIP mode"
+    constraint_type: hard        # also soft preference for AIF
+    note: "Prevents AIF from trivially satisfying latency SLO by SKIPping everything"
+
+  max_gpu_util:
+    threshold: 90
+    unit: "percent"
+    description: "GPU utilization should stay below this to prevent thermal throttling"
+    empirical_basis: "Orin thermal stable at 55-60C with GPU at 65%, ceiling at 90%"
+
+# --- Soft preferences (AIF encodes as preferred observations C) ---
+# Each preference has a target distribution shape for P(o | C)
+soft_preferences:
+  latency:
+    preferred_range_ms: [0, 100]   # AIF prefers observations in this range
+    tolerance_ms: 150              # hard ceiling
+    encoding: sigmoid              # P(o|C) = sigmoid(-(latency - tolerance) / tau)
+    tau: 15                        # temperature: how sharply preference drops near limit
+
+  fps:
+    preferred_range: [15, 30]
+    minimum: 10
+    encoding: sigmoid
+    tau: 2
+
+  skip_ratio:
+    preferred_range: [0, 0.15]     # AIF prefers low skip ratio
+    tolerance: 0.3
+    encoding: sigmoid
+    tau: 0.05
+
+  gpu_util:
+    preferred_range: [30, 70]      # sweet spot: not idle, not saturated
+    max: 90
+    encoding: gaussian             # bell curve centered on sweet spot
+    mu: 50
+    sigma: 20
+
+# --- Composite reward (for RL baseline) ---
+rl_reward:
+  slo_satisfied_bonus: 1.0        # per stream meeting both FPS and latency SLO
+  latency_violation_penalty: -2.0  # per stream violating P95 latency
+  fps_violation_penalty: -1.5      # per stream below min FPS
+  skip_penalty: -0.5              # per stream in SKIP mode (encourages detection)
+  offload_penalty: -0.2           # per OFFLOAD stream (better than SKIP: has detections)
+  switch_penalty_multiplier: -0.1  # multiplied by switch_cost penalty_score
+  no_op_bonus: 0.05               # small reward for stability when SLOs met
