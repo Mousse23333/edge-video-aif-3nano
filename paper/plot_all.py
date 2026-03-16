@@ -498,6 +498,200 @@ def plot_action_gantt(main_dir, out_dir, scenario='scenario_burst', run_id=1):
 # D. ABLATION STUDIES
 # ═══════════════════════════════════════════════════════════════════════════
 
+
+def plot_dqn_variance(main_dir, dqn_extra_dir, out_dir):
+    """E1. DQN 8-run variance analysis — box plot of SLO per scenario + switch scatter.
+
+    Merges original 5-run data with 3 extra seeds to show seed sensitivity.
+    """
+    main_agg = load_aggregate(main_dir)
+    extra_agg = load_aggregate(dqn_extra_dir)
+
+    scenarios = SCENARIO_ORDER
+
+    # Merge per-run SLO values: 5 original + 3 extra = 8
+    merged_slo = {}
+    merged_switches = {}
+    for scen in scenarios:
+        orig_slo = main_agg['dqn'][scen]['slo_satisfaction_rate']['values']
+        extra_slo = extra_agg['dqn'][scen]['slo_satisfaction_rate']['values']
+        merged_slo[scen] = orig_slo + extra_slo
+
+        orig_sw = main_agg['dqn'][scen]['n_mode_switches']['values']
+        extra_sw = extra_agg['dqn'][scen]['n_mode_switches']['values']
+        merged_switches[scen] = orig_sw + extra_sw
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.35))
+
+    # --- Left: SLO box plot with individual points ---
+    slo_data = [merged_slo[s] for s in scenarios]
+    bp = ax1.boxplot(slo_data, patch_artist=True, widths=0.5,
+                     medianprops=dict(color='black', linewidth=1.2),
+                     flierprops=dict(marker='o', markersize=3))
+    for patch in bp['boxes']:
+        patch.set_facecolor(COLORS['dqn'])
+        patch.set_alpha(0.5)
+
+    # Overlay individual points (jittered)
+    for i, scen in enumerate(scenarios):
+        vals = merged_slo[scen]
+        x_jitter = np.random.default_rng(42).uniform(-0.12, 0.12, len(vals))
+        # Mark original 5 vs extra 3
+        ax1.scatter([i + 1 + xj for xj in x_jitter[:5]], vals[:5],
+                    color=COLORS['dqn'], s=18, zorder=5, edgecolors='white',
+                    linewidths=0.5, label='Original (5 runs)' if i == 0 else None)
+        ax1.scatter([i + 1 + xj for xj in x_jitter[5:]], vals[5:],
+                    color='#0072B2', s=18, zorder=5, edgecolors='white',
+                    linewidths=0.5, marker='D',
+                    label='Extra seeds (3 runs)' if i == 0 else None)
+
+    add_slo_line(ax1, 0.9, '90% Target')
+    ax1.set_xticklabels([SCENARIO_SHORT[s] for s in scenarios])
+    ax1.set_ylabel('SLO Satisfaction Rate')
+    ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+    ax1.set_title('DQN SLO Distribution (8 runs)', fontsize=9)
+    ax1.legend(loc='lower left', fontsize=6)
+
+    # --- Right: Switch count box plot ---
+    sw_data = [merged_switches[s] for s in scenarios]
+    bp2 = ax2.boxplot(sw_data, patch_artist=True, widths=0.5,
+                      medianprops=dict(color='black', linewidth=1.2),
+                      flierprops=dict(marker='o', markersize=3))
+    for patch in bp2['boxes']:
+        patch.set_facecolor(COLORS['dqn'])
+        patch.set_alpha(0.5)
+
+    for i, scen in enumerate(scenarios):
+        vals = merged_switches[scen]
+        x_jitter = np.random.default_rng(42).uniform(-0.12, 0.12, len(vals))
+        ax2.scatter([i + 1 + xj for xj in x_jitter[:5]], vals[:5],
+                    color=COLORS['dqn'], s=18, zorder=5, edgecolors='white',
+                    linewidths=0.5)
+        ax2.scatter([i + 1 + xj for xj in x_jitter[5:]], vals[5:],
+                    color='#0072B2', s=18, zorder=5, edgecolors='white',
+                    linewidths=0.5, marker='D')
+
+    ax2.set_xticklabels([SCENARIO_SHORT[s] for s in scenarios])
+    ax2.set_ylabel('Mode Switches')
+    ax2.set_title('DQN Switch Count Distribution (8 runs)', fontsize=9)
+
+    fig.tight_layout(w_pad=2)
+    savefig(fig, os.path.join(out_dir, 'fig_dqn_variance'))
+
+
+def plot_skip_likelihood(ablation_dir, out_dir):
+    """E2. SKIP likelihood tuning — SLO and skip ratio across 3 variants.
+
+    Two-panel figure: left = SLO grouped bar, right = skip ratio grouped bar.
+    """
+    agg = load_ablation_aggregate(ablation_dir, 'skip_likelihood')
+    if agg is None:
+        print("  [SKIP] No skip_likelihood ablation data found.")
+        return
+
+    variants = ['skip_baseline', 'skip_mild', 'skip_moderate']
+    variant_labels = {
+        'skip_baseline':  'Baseline\n[0.50, 0.50, 0.00]',
+        'skip_mild':      'Mild\n[0.30, 0.50, 0.20]',
+        'skip_moderate':  'Moderate\n[0.20, 0.45, 0.35]',
+    }
+    variant_colors = ['#BBBBBB', '#66CCEE', '#4477AA']
+    scenarios = SCENARIO_ORDER
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.38))
+
+    n_var = len(variants)
+    n_scen = len(scenarios)
+    x = np.arange(n_scen)
+    width = 0.8 / n_var
+    offsets = np.linspace(-(n_var - 1) / 2 * width, (n_var - 1) / 2 * width, n_var)
+
+    # --- Left: SLO ---
+    for i, (var, color) in enumerate(zip(variants, variant_colors)):
+        means = [agg[var]['aif'][s]['slo_satisfaction_rate']['mean'] for s in scenarios]
+        stds = [agg[var]['aif'][s]['slo_satisfaction_rate']['std'] for s in scenarios]
+        ax1.bar(x + offsets[i], means, width * 0.9, yerr=stds,
+                label=variant_labels[var], color=color,
+                capsize=2, error_kw={'linewidth': 0.8},
+                edgecolor='white', linewidth=0.3)
+
+    add_slo_line(ax1, 0.9, '90% Target')
+    ax1.set_ylabel('SLO Satisfaction Rate')
+    ax1.set_xticks(x)
+    ax1.set_xticklabels([SCENARIO_SHORT[s] for s in scenarios])
+    ax1.set_ylim(0.6, 1.05)
+    ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+    ax1.set_title('SLO vs SKIP Likelihood', fontsize=9)
+    ax1.legend(loc='lower right', fontsize=5.5, handletextpad=0.4)
+
+    # --- Right: Skip Ratio ---
+    for i, (var, color) in enumerate(zip(variants, variant_colors)):
+        means = [agg[var]['aif'][s]['skip_ratio']['mean'] for s in scenarios]
+        stds = [agg[var]['aif'][s]['skip_ratio']['std'] for s in scenarios]
+        ax2.bar(x + offsets[i], means, width * 0.9, yerr=stds,
+                label=variant_labels[var], color=color,
+                capsize=2, error_kw={'linewidth': 0.8},
+                edgecolor='white', linewidth=0.3)
+
+    ax2.set_ylabel('Skip Ratio')
+    ax2.set_xticks(x)
+    ax2.set_xticklabels([SCENARIO_SHORT[s] for s in scenarios])
+    ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+    ax2.set_title('Skip Ratio vs SKIP Likelihood', fontsize=9)
+
+    fig.tight_layout(w_pad=2)
+    savefig(fig, os.path.join(out_dir, 'fig_skip_likelihood'))
+
+
+def plot_skip_likelihood_tradeoff(ablation_dir, out_dir):
+    """E3. SKIP likelihood trade-off — scatter plot of avg SLO vs avg skip ratio.
+
+    Each point = one variant × one scenario; connects variants with arrows.
+    """
+    agg = load_ablation_aggregate(ablation_dir, 'skip_likelihood')
+    if agg is None:
+        print("  [SKIP] No skip_likelihood ablation data found.")
+        return
+
+    variants = ['skip_baseline', 'skip_mild', 'skip_moderate']
+    variant_markers = {'skip_baseline': 'o', 'skip_mild': 's', 'skip_moderate': 'D'}
+    variant_labels = {'skip_baseline': 'Baseline', 'skip_mild': 'Mild', 'skip_moderate': 'Moderate'}
+    scenarios = SCENARIO_ORDER
+    scenario_colors = ['#4477AA', '#EE6677', '#228833', '#CCBB44']
+
+    fig, ax = plt.subplots(figsize=(SINGLE_COL_W * 1.3, SINGLE_COL_W * 1.3 * ASPECT))
+
+    for scen, color in zip(scenarios, scenario_colors):
+        slos, skips = [], []
+        for var in variants:
+            slo = agg[var]['aif'][scen]['slo_satisfaction_rate']['mean']
+            skip = agg[var]['aif'][scen]['skip_ratio']['mean']
+            slos.append(slo)
+            skips.append(skip)
+            ax.scatter(skip, slo, color=color, marker=variant_markers[var],
+                       s=40, zorder=5, edgecolors='white', linewidths=0.5)
+        # Connect with line
+        ax.plot(skips, slos, color=color, alpha=0.5, linewidth=1,
+                label=SCENARIO_SHORT[scen])
+        # Arrow from baseline to moderate
+        ax.annotate('', xy=(skips[-1], slos[-1]), xytext=(skips[0], slos[0]),
+                    arrowprops=dict(arrowstyle='->', color=color, lw=0.8, alpha=0.4))
+
+    # Marker legend
+    for var in variants:
+        ax.scatter([], [], marker=variant_markers[var], color='gray', s=30,
+                   label=variant_labels[var])
+
+    add_slo_line(ax, 0.9, '90% Target')
+    ax.set_xlabel('Skip Ratio')
+    ax.set_ylabel('SLO Satisfaction Rate')
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+    ax.set_title('SKIP Likelihood: SLO vs Skip Trade-off', fontsize=9)
+    ax.legend(loc='lower left', fontsize=6, ncol=2)
+
+    savefig(fig, os.path.join(out_dir, 'fig_skip_tradeoff'))
+
 def plot_ablation_likelihood(ablation_dir, out_dir):
     """D3. Paired bar chart — OFFLOAD likelihood v0 vs v1."""
     df = load_ablation_csv(ablation_dir, 'likelihood')
@@ -688,6 +882,10 @@ PLOT_REGISTRY = {
     'abl_cooldown':   ('D-: Cooldown Sensitivity',  lambda a: plot_ablation_sensitivity(a['abl'], a['out'], 'cooldown', r'$\tau_c$', [1, 3, 5], 'Cooldown Sensitivity')),
     'abl_offload':    ('D4: OFFLOAD On/Off',        lambda a: plot_ablation_offload_onoff(a['abl'], a['out'])),
     'abl_combined':   ('D*: Combined Ablation 2x2', lambda a: plot_ablation_combined(a['abl'], a['out'])),
+    # E: Supplementary experiments
+    'dqn_variance':   ('E1: DQN 8-Run Variance',    lambda a: plot_dqn_variance(a['main'], a['dqn_extra'], a['out'])),
+    'skip_likelihood':('E2: SKIP Likelihood Tuning', lambda a: plot_skip_likelihood(a['abl'], a['out'])),
+    'skip_tradeoff':  ('E3: SKIP SLO vs Skip Trade-off', lambda a: plot_skip_likelihood_tradeoff(a['abl'], a['out'])),
 }
 
 
@@ -698,6 +896,8 @@ def main():
                         help='Main experiment results directory')
     parser.add_argument('--ablation-dir', default='~/Desktop/experiments/ablation',
                         help='Ablation results directory')
+    parser.add_argument('--dqn-extra-dir', default='~/Desktop/experiments/dqn_extra',
+                        help='DQN extra seeds results directory')
     parser.add_argument('--output-dir', default='./figures',
                         help='Output directory for figures')
     parser.add_argument('--only', nargs='*', default=None,
@@ -715,6 +915,7 @@ def main():
     # Expand paths
     main_dir = os.path.expanduser(args.main_dir)
     abl_dir = os.path.expanduser(args.ablation_dir)
+    dqn_extra_dir = os.path.expanduser(args.dqn_extra_dir)
     out_dir = os.path.expanduser(args.output_dir)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -732,6 +933,7 @@ def main():
         'agg': agg,
         'main': main_dir,
         'abl': abl_dir,
+        'dqn_extra': dqn_extra_dir,
         'out': out_dir,
     }
 
