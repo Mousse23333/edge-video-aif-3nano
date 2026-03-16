@@ -1,0 +1,89 @@
+{
+  "config": {
+    "n_runs": 1,
+    "controllers": [
+      "noop",
+      "heuristic",
+      "myopic",
+      "dqn",
+      "aif"
+    ],
+    "scenarios": [
+      "scenario_ramp_up"
+    ],
+    "train_episodes": 1,
+    "timestamp": "2026-03-15T19:42:35.578188"
+  },
+  "summaries": [
+    {
+      "run_id": 1,
+      "controller": "noop",
+      "scenario": "scenario_ramp_up",
+      "slo_satisfaction_rate": 0.4406,
+      "slo_violations": 179,
+      "total_windows": 320,
+      "n_mode_switches": 0,
+      "skip_ratio": 0.0,
+      "offload_ratio": 0.0,
+      "avg_fps": 11.17,
+      "avg_latency_ms": 136.02,
+      "steps": 60
+    },
+    {
+      "run_id": 1,
+      "controller": "heuristic",
+      "scenario": "scenario_ramp_up",
+      "slo_satisfaction_rate": 0.9156,
+      "slo_violations": 27,
+      "total_windows": 320,
+      "n_mode_switches": 14,
+      "skip_ratio": 0.0,
+      "offload_ratio": 0.1156,
+      "avg_fps": 13.93,
+      "avg_latency_ms": 103.64,
+      "steps": 60
+    },
+    {
+      "run_id": 1,
+      "controller": "myopic",
+      "scenario": "scenario_ramp_up",
+      "slo_satisfaction_rate": 0.8781,
+      "slo_violations": 39,
+      "total_windows": 320,
+      "n_mode_switches": 9,
+      "skip_ratio": 0.0,
+      "offload_ratio": 0.0063,
+      "avg_fps": 13.79,
+      "avg_latency_ms": 116.36,
+      "steps": 60
+    },
+    {
+      "run_id": 1,
+      "controller": "dqn",
+      "scenario": "scenario_ramp_up",
+      "slo_satisfaction_rate": 0.9601,
+      "slo_violations": 12,
+      "total_windows": 301,
+      "n_mode_switches": 13,
+      "skip_ratio": 0.0383,
+      "offload_ratio": 0.246,
+      "avg_fps": 14.23,
+      "avg_latency_ms": 94.51,
+      "steps": 59
+    },
+    {
+      "run_id": 1,
+      "controller": "aif",
+      "scenario": "scenario_ramp_up",
+      "slo_satisfaction_rate": 0.8529,
+      "slo_violations": 40,
+      "total_windows": 272,
+      "n_mode_switches": 19,
+      "skip_ratio": 0.15,
+      "offload_ratio": 0.1781,
+      "avg_fps": 14.75,
+      "avg_latency_ms": 102.9,
+      "steps": 60
+    }
+  ]
+}

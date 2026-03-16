@@ -1,0 +1,6 @@
+run_id,controller,scenario,slo_satisfaction_rate,slo_violations,total_windows,n_mode_switches,skip_ratio,offload_ratio,avg_fps,avg_latency_ms,steps
+1,noop,scenario_ramp_up,0.4406,179,320,0,0.0,0.0,11.17,136.02,60
+1,heuristic,scenario_ramp_up,0.9156,27,320,14,0.0,0.1156,13.93,103.64,60
+1,myopic,scenario_ramp_up,0.8781,39,320,9,0.0,0.0063,13.79,116.36,60
+1,dqn,scenario_ramp_up,0.9601,12,301,13,0.0383,0.246,14.23,94.51,59
+1,aif,scenario_ramp_up,0.8529,40,272,19,0.15,0.1781,14.75,102.9,60

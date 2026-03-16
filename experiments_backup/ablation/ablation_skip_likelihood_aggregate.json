@@ -1,0 +1,278 @@
+{
+  "skip_baseline": {
+    "aif": {
+      "scenario_ramp_up": {
+        "slo_satisfaction_rate": {
+          "mean": 0.8651,
+          "std": 0.0228
+        },
+        "slo_violations": {
+          "mean": 37.3333,
+          "std": 6.1283
+        },
+        "n_mode_switches": {
+          "mean": 16.6667,
+          "std": 1.6997
+        },
+        "skip_ratio": {
+          "mean": 0.1344,
+          "std": 0.0044
+        },
+        "offload_ratio": {
+          "mean": 0.1354,
+          "std": 0.017
+        }
+      },
+      "scenario_burst": {
+        "slo_satisfaction_rate": {
+          "mean": 0.7486,
+          "std": 0.0127
+        },
+        "slo_violations": {
+          "mean": 62.3333,
+          "std": 2.6247
+        },
+        "n_mode_switches": {
+          "mean": 19.0,
+          "std": 0.0
+        },
+        "skip_ratio": {
+          "mean": 0.1733,
+          "std": 0.0082
+        },
+        "offload_ratio": {
+          "mean": 0.1767,
+          "std": 0.0072
+        }
+      },
+      "scenario_steady_overload": {
+        "slo_satisfaction_rate": {
+          "mean": 0.9073,
+          "std": 0.0174
+        },
+        "slo_violations": {
+          "mean": 43.3333,
+          "std": 7.4087
+        },
+        "n_mode_switches": {
+          "mean": 27.0,
+          "std": 1.633
+        },
+        "skip_ratio": {
+          "mean": 0.1211,
+          "std": 0.0185
+        },
+        "offload_ratio": {
+          "mean": 0.2297,
+          "std": 0.0108
+        }
+      },
+      "scenario_oscillating": {
+        "slo_satisfaction_rate": {
+          "mean": 0.8912,
+          "std": 0.0365
+        },
+        "slo_violations": {
+          "mean": 54.3333,
+          "std": 17.2111
+        },
+        "n_mode_switches": {
+          "mean": 37.0,
+          "std": 1.4142
+        },
+        "skip_ratio": {
+          "mean": 0.0957,
+          "std": 0.0223
+        },
+        "offload_ratio": {
+          "mean": 0.1975,
+          "std": 0.0053
+        }
+      }
+    }
+  },
+  "skip_mild": {
+    "aif": {
+      "scenario_ramp_up": {
+        "slo_satisfaction_rate": {
+          "mean": 0.923,
+          "std": 0.0156
+        },
+        "slo_violations": {
+          "mean": 21.6667,
+          "std": 4.1096
+        },
+        "n_mode_switches": {
+          "mean": 17.6667,
+          "std": 2.0548
+        },
+        "skip_ratio": {
+          "mean": 0.1166,
+          "std": 0.0332
+        },
+        "offload_ratio": {
+          "mean": 0.1729,
+          "std": 0.0637
+        }
+      },
+      "scenario_burst": {
+        "slo_satisfaction_rate": {
+          "mean": 0.9074,
+          "std": 0.0152
+        },
+        "slo_violations": {
+          "mean": 25.3333,
+          "std": 4.0277
+        },
+        "n_mode_switches": {
+          "mean": 19.0,
+          "std": 0.0
+        },
+        "skip_ratio": {
+          "mean": 0.0878,
+          "std": 0.0042
+        },
+        "offload_ratio": {
+          "mean": 0.21,
+          "std": 0.0152
+        }
+      },
+      "scenario_steady_overload": {
+        "slo_satisfaction_rate": {
+          "mean": 0.9108,
+          "std": 0.0219
+        },
+        "slo_violations": {
+          "mean": 42.6667,
+          "std": 10.403
+        },
+        "n_mode_switches": {
+          "mean": 27.0,
+          "std": 1.4142
+        },
+        "skip_ratio": {
+          "mean": 0.1042,
+          "std": 0.0023
+        },
+        "offload_ratio": {
+          "mean": 0.2172,
+          "std": 0.0217
+        }
+      },
+      "scenario_oscillating": {
+        "slo_satisfaction_rate": {
+          "mean": 0.9498,
+          "std": 0.0154
+        },
+        "slo_violations": {
+          "mean": 26.6667,
+          "std": 8.2192
+        },
+        "n_mode_switches": {
+          "mean": 36.6667,
+          "std": 0.9428
+        },
+        "skip_ratio": {
+          "mean": 0.0449,
+          "std": 0.0089
+        },
+        "offload_ratio": {
+          "mean": 0.2483,
+          "std": 0.0365
+        }
+      }
+    }
+  },
+  "skip_moderate": {
+    "aif": {
+      "scenario_ramp_up": {
+        "slo_satisfaction_rate": {
+          "mean": 0.9546,
+          "std": 0.0031
+        },
+        "slo_violations": {
+          "mean": 14.0,
+          "std": 0.8165
+        },
+        "n_mode_switches": {
+          "mean": 16.3333,
+          "std": 2.357
+        },
+        "skip_ratio": {
+          "mean": 0.0354,
+          "std": 0.0252
+        },
+        "offload_ratio": {
+          "mean": 0.1479,
+          "std": 0.0328
+        }
+      },
+      "scenario_burst": {
+        "slo_satisfaction_rate": {
+          "mean": 0.9169,
+          "std": 0.0097
+        },
+        "slo_violations": {
+          "mean": 23.3333,
+          "std": 2.6247
+        },
+        "n_mode_switches": {
+          "mean": 18.6667,
+          "std": 0.4714
+        },
+        "skip_ratio": {
+          "mean": 0.0633,
+          "std": 0.0098
+        },
+        "offload_ratio": {
+          "mean": 0.2345,
+          "std": 0.0532
+        }
+      },
+      "scenario_steady_overload": {
+        "slo_satisfaction_rate": {
+          "mean": 0.9062,
+          "std": 0.0122
+        },
+        "slo_violations": {
+          "mean": 46.3333,
+          "std": 5.4365
+        },
+        "n_mode_switches": {
+          "mean": 27.6667,
+          "std": 0.9428
+        },
+        "skip_ratio": {
+          "mean": 0.0731,
+          "std": 0.0272
+        },
+        "offload_ratio": {
+          "mean": 0.2103,
+          "std": 0.0151
+        }
+      },
+      "scenario_oscillating": {
+        "slo_satisfaction_rate": {
+          "mean": 0.9506,
+          "std": 0.0041
+        },
+        "slo_violations": {
+          "mean": 27.0,
+          "std": 2.1602
+        },
+        "n_mode_switches": {
+          "mean": 36.0,
+          "std": 1.633
+        },
+        "skip_ratio": {
+          "mean": 0.0168,
+          "std": 0.0046
+        },
+        "offload_ratio": {
+          "mean": 0.2376,
+          "std": 0.011
+        }
+      }
+    }
+  }
+}

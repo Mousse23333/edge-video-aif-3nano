@@ -1,0 +1,186 @@
+{
+  "v0_offload_bad": {
+    "aif": {
+      "scenario_ramp_up": {
+        "slo_satisfaction_rate": {
+          "mean": 0.7184,
+          "std": 0.0246
+        },
+        "slo_violations": {
+          "mean": 74.3333,
+          "std": 5.2493
+        },
+        "n_mode_switches": {
+          "mean": 16.3333,
+          "std": 0.9428
+        },
+        "skip_ratio": {
+          "mean": 0.174,
+          "std": 0.0148
+        },
+        "offload_ratio": {
+          "mean": 0.0,
+          "std": 0.0
+        }
+      },
+      "scenario_burst": {
+        "slo_satisfaction_rate": {
+          "mean": 0.7137,
+          "std": 0.0842
+        },
+        "slo_violations": {
+          "mean": 69.0,
+          "std": 16.3095
+        },
+        "n_mode_switches": {
+          "mean": 16.6667,
+          "std": 1.2472
+        },
+        "skip_ratio": {
+          "mean": 0.1844,
+          "std": 0.0434
+        },
+        "offload_ratio": {
+          "mean": 0.01,
+          "std": 0.0141
+        }
+      },
+      "scenario_steady_overload": {
+        "slo_satisfaction_rate": {
+          "mean": 0.8789,
+          "std": 0.0206
+        },
+        "slo_violations": {
+          "mean": 57.0,
+          "std": 10.0333
+        },
+        "n_mode_switches": {
+          "mean": 25.6667,
+          "std": 1.6997
+        },
+        "skip_ratio": {
+          "mean": 0.1192,
+          "std": 0.0049
+        },
+        "offload_ratio": {
+          "mean": 0.0506,
+          "std": 0.0425
+        }
+      },
+      "scenario_oscillating": {
+        "slo_satisfaction_rate": {
+          "mean": 0.8403,
+          "std": 0.006
+        },
+        "slo_violations": {
+          "mean": 80.0,
+          "std": 3.266
+        },
+        "n_mode_switches": {
+          "mean": 23.6667,
+          "std": 0.4714
+        },
+        "skip_ratio": {
+          "mean": 0.1005,
+          "std": 0.0029
+        },
+        "offload_ratio": {
+          "mean": 0.0,
+          "std": 0.0
+        }
+      }
+    }
+  },
+  "v1_offload_system": {
+    "aif": {
+      "scenario_ramp_up": {
+        "slo_satisfaction_rate": {
+          "mean": 0.8749,
+          "std": 0.0115
+        },
+        "slo_violations": {
+          "mean": 33.0,
+          "std": 3.7417
+        },
+        "n_mode_switches": {
+          "mean": 17.6667,
+          "std": 0.9428
+        },
+        "skip_ratio": {
+          "mean": 0.1771,
+          "std": 0.0174
+        },
+        "offload_ratio": {
+          "mean": 0.1823,
+          "std": 0.0598
+        }
+      },
+      "scenario_burst": {
+        "slo_satisfaction_rate": {
+          "mean": 0.7908,
+          "std": 0.0641
+        },
+        "slo_violations": {
+          "mean": 52.0,
+          "std": 13.6382
+        },
+        "n_mode_switches": {
+          "mean": 19.0,
+          "std": 0.8165
+        },
+        "skip_ratio": {
+          "mean": 0.1589,
+          "std": 0.0424
+        },
+        "offload_ratio": {
+          "mean": 0.1689,
+          "std": 0.0137
+        }
+      },
+      "scenario_steady_overload": {
+        "slo_satisfaction_rate": {
+          "mean": 0.8885,
+          "std": 0.027
+        },
+        "slo_violations": {
+          "mean": 52.0,
+          "std": 12.3288
+        },
+        "n_mode_switches": {
+          "mean": 28.0,
+          "std": 0.0
+        },
+        "skip_ratio": {
+          "mean": 0.1255,
+          "std": 0.0095
+        },
+        "offload_ratio": {
+          "mean": 0.221,
+          "std": 0.0183
+        }
+      },
+      "scenario_oscillating": {
+        "slo_satisfaction_rate": {
+          "mean": 0.9125,
+          "std": 0.0229
+        },
+        "slo_violations": {
+          "mean": 44.0,
+          "std": 10.9848
+        },
+        "n_mode_switches": {
+          "mean": 34.3333,
+          "std": 1.6997
+        },
+        "skip_ratio": {
+          "mean": 0.0934,
+          "std": 0.0198
+        },
+        "offload_ratio": {
+          "mean": 0.2436,
+          "std": 0.0055
+        }
+      }
+    }
+  }
+}

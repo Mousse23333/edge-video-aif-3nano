@@ -1,0 +1,337 @@
+{
+  "noop": {
+    "scenario_ramp_up": {
+      "slo_satisfaction_rate": {
+        "mean": 0.4406,
+        "std": 0.0,
+        "min": 0.4406,
+        "max": 0.4406,
+        "values": [
+          0.4406
+        ]
+      },
+      "slo_violations": {
+        "mean": 179.0,
+        "std": 0.0,
+        "min": 179.0,
+        "max": 179.0,
+        "values": [
+          179.0
+        ]
+      },
+      "n_mode_switches": {
+        "mean": 0.0,
+        "std": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "values": [
+          0.0
+        ]
+      },
+      "skip_ratio": {
+        "mean": 0.0,
+        "std": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "values": [
+          0.0
+        ]
+      },
+      "offload_ratio": {
+        "mean": 0.0,
+        "std": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "values": [
+          0.0
+        ]
+      },
+      "avg_fps": {
+        "mean": 11.17,
+        "std": 0.0,
+        "min": 11.17,
+        "max": 11.17,
+        "values": [
+          11.17
+        ]
+      },
+      "avg_latency_ms": {
+        "mean": 136.02,
+        "std": 0.0,
+        "min": 136.02,
+        "max": 136.02,
+        "values": [
+          136.02
+        ]
+      }
+    }
+  },
+  "heuristic": {
+    "scenario_ramp_up": {
+      "slo_satisfaction_rate": {
+        "mean": 0.9156,
+        "std": 0.0,
+        "min": 0.9156,
+        "max": 0.9156,
+        "values": [
+          0.9156
+        ]
+      },
+      "slo_violations": {
+        "mean": 27.0,
+        "std": 0.0,
+        "min": 27.0,
+        "max": 27.0,
+        "values": [
+          27.0
+        ]
+      },
+      "n_mode_switches": {
+        "mean": 14.0,
+        "std": 0.0,
+        "min": 14.0,
+        "max": 14.0,
+        "values": [
+          14.0
+        ]
+      },
+      "skip_ratio": {
+        "mean": 0.0,
+        "std": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "values": [
+          0.0
+        ]
+      },
+      "offload_ratio": {
+        "mean": 0.1156,
+        "std": 0.0,
+        "min": 0.1156,
+        "max": 0.1156,
+        "values": [
+          0.1156
+        ]
+      },
+      "avg_fps": {
+        "mean": 13.93,
+        "std": 0.0,
+        "min": 13.93,
+        "max": 13.93,
+        "values": [
+          13.93
+        ]
+      },
+      "avg_latency_ms": {
+        "mean": 103.64,
+        "std": 0.0,
+        "min": 103.64,
+        "max": 103.64,
+        "values": [
+          103.64
+        ]
+      }
+    }
+  },
+  "myopic": {
+    "scenario_ramp_up": {
+      "slo_satisfaction_rate": {
+        "mean": 0.8781,
+        "std": 0.0,
+        "min": 0.8781,
+        "max": 0.8781,
+        "values": [
+          0.8781
+        ]
+      },
+      "slo_violations": {
+        "mean": 39.0,
+        "std": 0.0,
+        "min": 39.0,
+        "max": 39.0,
+        "values": [
+          39.0
+        ]
+      },
+      "n_mode_switches": {
+        "mean": 9.0,
+        "std": 0.0,
+        "min": 9.0,
+        "max": 9.0,
+        "values": [
+          9.0
+        ]
+      },
+      "skip_ratio": {
+        "mean": 0.0,
+        "std": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "values": [
+          0.0
+        ]
+      },
+      "offload_ratio": {
+        "mean": 0.0063,
+        "std": 0.0,
+        "min": 0.0063,
+        "max": 0.0063,
+        "values": [
+          0.0063
+        ]
+      },
+      "avg_fps": {
+        "mean": 13.79,
+        "std": 0.0,
+        "min": 13.79,
+        "max": 13.79,
+        "values": [
+          13.79
+        ]
+      },
+      "avg_latency_ms": {
+        "mean": 116.36,
+        "std": 0.0,
+        "min": 116.36,
+        "max": 116.36,
+        "values": [
+          116.36
+        ]
+      }
+    }
+  },
+  "dqn": {
+    "scenario_ramp_up": {
+      "slo_satisfaction_rate": {
+        "mean": 0.9601,
+        "std": 0.0,
+        "min": 0.9601,
+        "max": 0.9601,
+        "values": [
+          0.9601
+        ]
+      },
+      "slo_violations": {
+        "mean": 12.0,
+        "std": 0.0,
+        "min": 12.0,
+        "max": 12.0,
+        "values": [
+          12.0
+        ]
+      },
+      "n_mode_switches": {
+        "mean": 13.0,
+        "std": 0.0,
+        "min": 13.0,
+        "max": 13.0,
+        "values": [
+          13.0
+        ]
+      },
+      "skip_ratio": {
+        "mean": 0.0383,
+        "std": 0.0,
+        "min": 0.0383,
+        "max": 0.0383,
+        "values": [
+          0.0383
+        ]
+      },
+      "offload_ratio": {
+        "mean": 0.246,
+        "std": 0.0,
+        "min": 0.246,
+        "max": 0.246,
+        "values": [
+          0.246
+        ]
+      },
+      "avg_fps": {
+        "mean": 14.23,
+        "std": 0.0,
+        "min": 14.23,
+        "max": 14.23,
+        "values": [
+          14.23
+        ]
+      },
+      "avg_latency_ms": {
+        "mean": 94.51,
+        "std": 0.0,
+        "min": 94.51,
+        "max": 94.51,
+        "values": [
+          94.51
+        ]
+      }
+    }
+  },
+  "aif": {
+    "scenario_ramp_up": {
+      "slo_satisfaction_rate": {
+        "mean": 0.8529,
+        "std": 0.0,
+        "min": 0.8529,
+        "max": 0.8529,
+        "values": [
+          0.8529
+        ]
+      },
+      "slo_violations": {
+        "mean": 40.0,
+        "std": 0.0,
+        "min": 40.0,
+        "max": 40.0,
+        "values": [
+          40.0
+        ]
+      },
+      "n_mode_switches": {
+        "mean": 19.0,
+        "std": 0.0,
+        "min": 19.0,
+        "max": 19.0,
+        "values": [
+          19.0
+        ]
+      },
+      "skip_ratio": {
+        "mean": 0.15,
+        "std": 0.0,
+        "min": 0.15,
+        "max": 0.15,
+        "values": [
+          0.15
+        ]
+      },
+      "offload_ratio": {
+        "mean": 0.1781,
+        "std": 0.0,
+        "min": 0.1781,
+        "max": 0.1781,
+        "values": [
+          0.1781
+        ]
+      },
+      "avg_fps": {
+        "mean": 14.75,
+        "std": 0.0,
+        "min": 14.75,
+        "max": 14.75,
+        "values": [
+          14.75
+        ]
+      },
+      "avg_latency_ms": {
+        "mean": 102.9,
+        "std": 0.0,
+        "min": 102.9,
+        "max": 102.9,
+        "values": [
+          102.9
+        ]
+      }
+    }
+  }
+}
