@@ -12,7 +12,7 @@ import json
 import argparse
 from engine.episode import EpisodeRunner, ControllerInterface
 from controllers.aif import AIFController
-from run_all_controllers import extract_summary
+from run_multi_experiment import extract_summary
 
 
 def main():
@@ -43,7 +43,7 @@ def main():
             controller=controller,
         )
         history = runner.run(output_dir=args.output_dir, quiet=args.quiet)
-        summary = extract_summary("aif", scenario, history)
+        summary = extract_summary("aif", scenario, history, run_id=1)
 
         print(f"\n  -> SLO: {summary['slo_satisfaction_rate']:.1%}, "
               f"violations: {summary['slo_violations']}/{summary['total_windows']}, "
