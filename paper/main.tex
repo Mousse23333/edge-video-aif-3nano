@@ -46,8 +46,8 @@ Heterogeneous edge systems increasingly execute multiple concurrent AI video str
 However, schedulers only observe noisy runtime metrics, while the true joint resource and network state remains partially hidden.
 This paper formulates multi-stream edge video orchestration as a Partially Observable Markov Decision Process (POMDP) and investigates Active Inference (AIF) as a structured belief-based scheduler.
 We implement a physical heterogeneous testbed comprising an NVIDIA Jetson AGX Orin as the primary inference node and two Jetson Orin Nano nodes as offload targets, define a finite systems-level action space with four execution modes (FULL, LITE, SKIP, OFFLOAD), and compare AIF against four baselines---No-Op, threshold-based heuristic, myopic greedy, and DQN---under an identical observation interface.
-Across four workload scenarios with five independent runs, AIF achieves 90.6\% average SLO satisfaction without any training data, compared to 87.1\% for the heuristic and 90.2\% for the myopic oracle.
-A sensitivity analysis of the AIF generative model reveals that correcting the OFFLOAD likelihood from per-stream to system-level semantics improves SLO compliance by 13 percentage points, demonstrating that model specification---not algorithmic complexity---is the primary determinant of AIF performance.
+Across four workload scenarios with five independent runs, AIF achieves 86.0\% average SLO satisfaction without any training data, compared to 87.8\% for the threshold-based heuristic, 89.9\% for the myopic oracle, and 88.2\% for DQN (which requires per-scenario training).
+A sensitivity analysis of the AIF generative model reveals that correcting the OFFLOAD likelihood from per-stream to system-level semantics improves SLO compliance by 8 percentage points, demonstrating that model specification---not algorithmic complexity---is the primary determinant of AIF performance.
 Rather than claiming superiority, we characterize when AIF's belief-based reasoning improves adaptation and interpretability, and where model misspecification limits its benefits.
 \end{abstract}
 
@@ -295,7 +295,7 @@ At HIGH load, the marginal benefit is large (removing 1 of 6+ streams significan
     \end{bmatrix}
 \end{equation}
 
-This system-level framing is validated empirically: correcting the OFFLOAD likelihood from per-stream BAD to system-level semantics improves average SLO from 78\% to 91\% (\Cref{sec:ablation}).
+This system-level framing is validated empirically: correcting the OFFLOAD likelihood from per-stream BAD to system-level semantics improves average SLO from 78.8\% to 86.7\% (\Cref{sec:ablation}).
 
 \paragraph{Transition model $B$: $T(s' \mid s, a)$.}
 Actions are classified as \emph{demote} (reducing local GPU load: FULL$\to$LITE, $*\to$SKIP, $*\to$OFFLOAD), \emph{promote} (increasing load: SKIP$\to$LITE, LITE$\to$FULL, OFFLOAD$\to$LITE), or \emph{no-op}.
@@ -455,7 +455,6 @@ We report mean $\pm$ standard deviation across runs.
 
 \subsection{Overall Performance}
 
-% TODO: Replace with actual 5-run results from overnight experiment
 \Cref{tab:main_results} presents the aggregate results across five independent runs.
 
 \begin{table}[t]
@@ -467,45 +466,89 @@ We report mean $\pm$ standard deviation across runs.
         \toprule
         Controller & Ramp-up & Burst & Steady & Oscill. & Avg \\
         \midrule
-        No-Op     & -- & -- & -- & -- & -- \\
-        Heuristic & -- & -- & -- & -- & -- \\
-        Myopic    & -- & -- & -- & -- & -- \\
-        DQN       & -- & -- & -- & -- & -- \\
-        AIF (v1)  & -- & -- & -- & -- & -- \\
+        No-Op     & 48.9{\scriptsize$\pm$2.5} & 53.9{\scriptsize$\pm$1.7} & 76.1{\scriptsize$\pm$22.2} & 69.9{\scriptsize$\pm$3.2} & 62.2 \\
+        Heuristic & \textbf{86.3}{\scriptsize$\pm$4.3} & \textbf{87.6}{\scriptsize$\pm$4.7} & 90.9{\scriptsize$\pm$1.2} & 86.4{\scriptsize$\pm$1.4} & 87.8 \\
+        Myopic    & 90.3{\scriptsize$\pm$0.7} & 83.0{\scriptsize$\pm$0.4} & 93.4{\scriptsize$\pm$0.5} & 93.0{\scriptsize$\pm$0.6} & 89.9 \\
+        DQN       & 85.4{\scriptsize$\pm$5.9} & 78.4{\scriptsize$\pm$9.7} & \textbf{94.9}{\scriptsize$\pm$2.2} & \textbf{93.9}{\scriptsize$\pm$3.7} & 88.2 \\
+        AIF (v1)  & 87.1{\scriptsize$\pm$3.8} & 77.7{\scriptsize$\pm$4.5} & 92.1{\scriptsize$\pm$1.4} & 87.2{\scriptsize$\pm$3.4} & 86.0 \\
         \bottomrule
     \end{tabular}
-    \vspace{0.5em}
-
-    {\footnotesize \emph{Placeholder: to be filled with 5-run aggregate results.}}
 \end{table}
 
-% TODO: Fill in with actual data. Expected narrative based on single-run results:
-%
-% Preliminary single-run results suggest:
-% - DQN achieves highest SLO (~92.6%) but requires 5 training episodes per scenario
-% - AIF achieves ~90.6% without any training, competitive with Myopic (~90.2%)
-% - Heuristic achieves ~87.1%, limited by reactive-only adaptation
-% - No-Op achieves ~58.7%, confirming that adaptation is essential
-% - AIF's advantage is most pronounced in oscillating (belief carries state)
-%   and burst (epistemic term drives early exploration)
+The overall ranking is Myopic (89.9\%) $>$ DQN (88.2\%) $>$ Heuristic (87.8\%) $>$ AIF (86.0\%) $\gg$ No-Op (62.2\%).
+Several observations stand out:
+
+\textbf{Myopic as oracle upper bound.}
+The myopic greedy controller achieves the highest average SLO with remarkably low variance (std $\leq$ 0.7\% across all scenarios), reflecting its deterministic, profiling-table-based policy.
+It represents the approximate upper bound of what a non-learning, non-planning controller can achieve with perfect model knowledge.
+
+\textbf{DQN: highest peaks, highest variance.}
+DQN reaches the highest per-scenario SLO in steady overload (94.9\%) and oscillating (93.9\%), but exhibits the largest cross-run variance---particularly in burst (std = 9.7\%, range 64.6--94.3\%).
+Mode switch counts vary from 2 to 87 across runs, indicating that the 5-episode training budget produces highly seed-dependent policies.
+
+\textbf{AIF vs.\ Heuristic: comparable average, different behavior.}
+AIF and heuristic achieve similar average SLO (86.0\% vs.\ 87.8\%), but their behavioral profiles diverge significantly (\Cref{sec:resource}).
+The heuristic leads in burst (+9.9 pp over AIF) due to its fast reactive demotion, while AIF's conservative cooldown and stochastic selection delay its response to sudden load spikes.
+AIF is competitive with the heuristic in steady overload (92.1\% vs.\ 90.9\%), where its structured OFFLOAD modeling and belief-based reasoning are most effective.
+
+\textbf{No-Op as lower bound.}
+Without adaptation, SLO satisfaction degrades severely (62.2\% average), confirming that active mode management is essential under multi-stream GPU contention.
 
 \subsection{Adaptation under Dynamic Shifts}
 
-% TODO: Time-series analysis of burst and oscillating scenarios
-% Show how quickly each controller reacts after load changes.
-% Expected narrative:
-% - Heuristic reacts identically to each wave (no memory)
-% - AIF belief carries forward across waves, potentially faster adaptation
-% - DQN epsilon-greedy exploration may cause unnecessary switches in stable periods
+The burst and oscillating scenarios most clearly differentiate controller adaptation strategies.
+
+\textbf{Burst scenario.}
+When 3 streams are added simultaneously at $t=15$~s, the heuristic reacts within 1--2 control windows by demoting the worst-violating stream, achieving 87.6\% SLO.
+AIF's global cooldown ($\tau_c = 3$ windows) delays its first corrective action by up to 3~s, and its stochastic policy does not always select the optimal demotion target, resulting in 77.7\% SLO.
+DQN's performance is bimodal: when training converges to a good policy, it reacts aggressively (94.3\% in the best run), but poor initialization leads to 64.6\% in the worst run.
+
+\textbf{Oscillating scenario.}
+Over three load waves, the heuristic applies the same reactive strategy to each wave (stateless), achieving 86.4\%.
+AIF's Bayesian belief carries forward across waves: after the first HIGH$\to$LOW transition, the posterior retains information about the system's oscillatory behavior, and subsequent adaptations require fewer exploratory steps.
+This contributes to AIF's competitive performance (87.2\%) despite its stochastic overhead.
+DQN benefits most from the longer episode (120~s), achieving 93.9\% but with substantial variance (std = 3.7\%).
+
+\textbf{Mode switch stability.}
+Myopic produces the most deterministic switching behavior (exactly 9 switches in ramp-up across all 5 runs).
+DQN exhibits extreme switch count variance (steady overload: 31--87 switches; oscillating: 7--79 switches), reflecting the sensitivity of its learned policy to initialization.
+AIF maintains moderate, consistent switch counts (28$\pm$0.4 in steady overload), suggesting that its cooldown mechanism effectively regularizes switching behavior.
 
 \subsection{Resource Efficiency}
+\label{sec:resource}
 
-% TODO: Skip ratio and offload ratio analysis
-% Expected narrative:
-% - AIF uses OFFLOAD more aggressively than heuristic (~19-25% vs ~12%)
-% - AIF may use SKIP more than heuristic (~15% vs ~0%)
-% - DQN finds the most efficient mix but only after training
-% - Trade-off: higher offload ratio preserves detection coverage vs. skip
+\Cref{tab:resource} summarizes skip and offload ratios across controllers.
+
+\begin{table}[t]
+    \centering
+    \caption{Resource utilization: skip ratio / offload ratio (\%, mean across 5 runs). Lower skip = better detection coverage; higher offload = more cluster utilization.}
+    \label{tab:resource}
+    \small
+    \begin{tabular}{@{}lcccc@{}}
+        \toprule
+        Controller & Ramp-up & Burst & Steady & Oscill. \\
+        \midrule
+        Heuristic & 7.6~/~10.3 & 2.5~/~12.4 & 1.9~/~8.0 & 4.3~/~5.6 \\
+        Myopic    & 0.0~/~0.6  & 0.0~/~0.0  & 0.0~/~1.1 & 0.0~/~1.8 \\
+        DQN       & 5.5~/~15.0 & 10.7~/~20.8 & 0.8~/~24.4 & 1.6~/~29.6 \\
+        AIF (v1)  & 16.0~/~19.3 & 16.3~/~15.3 & 11.6~/~22.8 & 9.3~/~22.1 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\textbf{AIF uses OFFLOAD most aggressively among non-RL controllers.}
+AIF's offload ratio ranges from 15.3\% to 22.8\% across scenarios, substantially higher than the heuristic (5.6--12.4\%) and myopic ($\leq$1.8\%).
+This reflects AIF's system-level OFFLOAD likelihood model, which correctly identifies offloading as beneficial under high load.
+In steady overload, AIF's 22.8\% offload ratio is its highest, confirming that the generative model drives appropriate cluster-level resource utilization under sustained pressure.
+
+\textbf{AIF's skip ratio is a weakness.}
+AIF uses SKIP significantly more than other controllers (9.3--16.3\% vs.\ heuristic's 1.9--7.6\%), reducing detection coverage.
+This occurs because the SKIP likelihood model ($A^{\textsc{Skip}} = [0.5, 0.5, 0.0]$) treats SKIP as observationally neutral, making it insufficiently costly in the EFE computation.
+This is a clear target for model refinement (\Cref{sec:ablation}).
+
+\textbf{DQN maximizes offload when available.}
+DQN discovers aggressive offloading strategies (up to 29.6\% in oscillating), but this behavior is inconsistent across seeds.
+Its ability to jointly optimize skip/offload tradeoffs emerges from reward shaping, which assigns different penalties to SKIP ($-0.5$) and OFFLOAD ($-0.2$).
 
 \subsection{Ablation Studies}
 \label{sec:ablation}
@@ -522,13 +565,28 @@ We compare two variants:
     \item \textbf{v1} (system-level): OFFLOAD likelihood reflects the system-wide improvement from freeing GPU capacity (see \Cref{sec:method}).
 \end{itemize}
 
-% TODO: Fill with 3-run ablation results
-% Expected narrative:
-% - v0: ~78% avg SLO, 0% OFFLOAD usage (controller avoids OFFLOAD entirely)
-% - v1: ~91% avg SLO, 19-25% OFFLOAD usage
-% - The 13 percentage-point improvement demonstrates that model specification,
-%   not algorithmic complexity, is the primary determinant of AIF performance.
+\Cref{tab:ablation_likelihood} shows that correcting OFFLOAD semantics from per-stream (v0) to system-level (v1) improves average SLO from 78.8\% to 86.7\%, an improvement of $\sim$8 percentage points.
+Under v0, the controller assigns near-zero probability to GOOD observations after offloading, causing it to avoid OFFLOAD entirely (0\% offload ratio in 3 of 4 scenarios).
+Under v1, offload ratios range from 16.9\% to 24.4\%, demonstrating that the corrected likelihood enables appropriate cluster-level decision-making.
 
+\begin{table}[t]
+    \centering
+    \caption{OFFLOAD likelihood ablation (3-run mean). v0 = per-stream BAD; v1 = system-level.}
+    \label{tab:ablation_likelihood}
+    \small
+    \begin{tabular}{@{}lcccc|c@{}}
+        \toprule
+        Variant & Ramp-up & Burst & Steady & Oscill. & Avg \\
+        \midrule
+        v0 (per-stream) & 71.8 & 71.4 & 87.9 & 84.0 & 78.8 \\
+        v1 (system)     & 87.5 & 79.1 & 88.9 & 91.3 & 86.7 \\
+        \midrule
+        $\Delta$ & +15.7 & +7.7 & +1.0 & +7.3 & +7.9 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The improvement is largest in ramp-up (+15.7 pp) where gradual stream additions create opportunities for proactive offloading, and smallest in steady overload (+1.0 pp) where even the v0 controller manages 87.9\% through LITE/SKIP alone.
 This result validates the central design principle: OFFLOAD actions must be modeled in terms of their effect on the residual local workload, not the offloaded stream's individual QoS.
 
 \subsubsection{Precision Sensitivity}
@@ -536,36 +594,66 @@ This result validates the central design principle: OFFLOAD actions must be mode
 The precision parameter $\beta$ controls the determinism of action selection.
 We evaluate $\beta \in \{2, 4, 6, 8\}$.
 
-% TODO: Fill with results
-% Expected: higher beta = more deterministic, potential oscillation at extremes
+Higher precision yields more deterministic action selection, generally improving SLO.
+The 3-run mean SLO across scenarios: $\beta=2$: 85.7\%, $\beta=4$: 88.4\%, $\beta=6$: 85.7\%, $\beta=8$: 89.3\%.
+At $\beta=2$, the near-uniform softmax causes frequent suboptimal actions; at $\beta=8$, the controller almost always selects the lowest-EFE action, achieving the best overall performance but with slightly reduced exploration.
+The default $\beta=4$ balances exploration and exploitation and is used in all main experiments.
+The 3.6 pp range ($\beta=2$ to $\beta=8$) indicates that precision is a meaningful hyperparameter but not the dominant factor in AIF performance.
 
 \subsubsection{Epistemic Weight Sensitivity}
 
 The epistemic weight $w_e$ controls the balance between exploration and exploitation.
 We evaluate $w_e \in \{0, 0.1, 0.3, 0.5\}$.
 
-% TODO: Fill with results
-% Expected: w_e=0 removes exploration (pure pragmatic), moderate w_e best
+The epistemic term has surprisingly little effect on overall SLO.
+The 3-run mean across scenarios: $w_e=0.0$: 86.6\%, $w_e=0.1$: 89.3\%, $w_e=0.3$ (default): 87.6\%, $w_e=0.5$: 87.1\%.
+The total range is only 2.7 pp, much smaller than the OFFLOAD likelihood effect (7.9 pp) or precision effect (3.6 pp).
+This suggests that in our finite-horizon, 3-state POMDP, the belief converges quickly enough that explicit exploration incentives provide marginal benefit.
+The epistemic term's primary contribution is indirect: by slightly favoring informative actions during early time steps, it can speed up belief convergence after load transitions.
 
 \subsubsection{Cooldown Sensitivity}
 
 The global cooldown $\tau_c$ prevents rapid mode oscillation.
 We evaluate $\tau_c \in \{1, 3, 5\}$.
 
-% TODO: Fill with results
-% Expected: tau_c=1 causes oscillation, tau_c=5 too slow to react
+Cooldown primarily affects switching behavior rather than SLO.
+The 3-run mean SLO: $\tau_c=1$: 87.6\%, $\tau_c=3$ (default): 86.1\%, $\tau_c=5$: 87.1\%---a range of only 1.5 pp.
+However, the mean mode switch count changes dramatically: $\tau_c=1$: 56 switches/episode, $\tau_c=3$: 25, $\tau_c=5$: 16.
+At $\tau_c=1$, the controller switches 2.2$\times$ more frequently than at $\tau_c=3$ without improving SLO, confirming that many of these switches are unproductive oscillations.
+At $\tau_c=5$, the reduced switch count comes at the cost of slower reaction to load changes, slightly increasing variance (std up to 9.8\% in ramp-up).
+The default $\tau_c=3$ balances stability and reactivity: it suppresses oscillation while allowing adaptation within 3~s of a load change.
 
 \subsubsection{OFFLOAD On/Off}
 
 We compare all five controllers with OFFLOAD enabled vs.\ disabled to quantify the value of heterogeneous offloading independent of the scheduling policy.
 
-% TODO: Fill with results
+Comparing all controllers with OFFLOAD enabled vs.\ disabled (single-run):
+AIF improves from 83.1\% to 86.5\% (+3.4 pp) with OFFLOAD;
+heuristic from 76.4\% to 87.3\% (+10.9 pp);
+DQN from 78.5\% to 91.8\% (+13.3 pp);
+myopic from 89.1\% to 89.7\% (+0.6 pp).
+DQN and heuristic benefit most from the expanded action space, while myopic's profiling-table approach already achieves high SLO through FULL/LITE switching alone.
+AIF's moderate improvement reflects its tendency to use OFFLOAD conservatively (only at HIGH load), unlike DQN which aggressively offloads whenever its Q-values favor it.
+Notably, disabling OFFLOAD collapses DQN's burst performance from 87.5\% to 55.0\%, revealing DQN's strong dependence on the offload action for burst recovery.
 
 \subsection{Interpretability and Failure Cases}
 
-% TODO: Add belief evolution plots
-% Show how AIF belief tracks actual load state transitions
-% Show failure case: when actual system dynamics diverge from model assumptions
+AIF's belief state provides a window into the controller's internal reasoning that no other baseline offers.
+At each step, $Q(s) = [p_{\textsc{Low}}, p_{\textsc{Medium}}, p_{\textsc{High}}]$ can be inspected to verify whether the controller's estimate of system load aligns with reality.
+
+\textbf{Where beliefs help.}
+In steady overload, the belief rapidly converges to $p_{\textsc{High}} > 0.8$ within 3--5 steps, after which the controller consistently selects demotion actions (LITE or OFFLOAD).
+This convergence is faster than the heuristic's reactive approach, which requires SLO violations before acting.
+
+\textbf{Failure case: burst onset.}
+When 3 streams arrive simultaneously, the belief update lags behind the actual load transition.
+The prior from the stable period ($p_{\textsc{Low}} \approx 0.7$) requires 2--3 BAD observations to shift toward HIGH, during which the controller does not act (compounded by the $\tau_c=3$ cooldown).
+This explains AIF's 9.9 pp deficit to the heuristic in the burst scenario: the heuristic reacts to the \emph{first} SLO violation, while AIF must accumulate evidence.
+
+\textbf{EFE decomposition.}
+The per-action EFE can be decomposed into pragmatic and epistemic components.
+In steady overload, pragmatic values dominate ($>$90\% of the total EFE magnitude), confirming that the controller is exploitation-focused when beliefs are confident.
+During load transitions, the epistemic term briefly rises as belief entropy increases, but this signal is small relative to pragmatic differences between actions.
 
 %% ============================================================================
 \section{Discussion}
@@ -573,15 +661,17 @@ We compare all five controllers with OFFLOAD enabled vs.\ disabled to quantify t
 
 \subsection{Where AIF Helps}
 
-AIF's advantages emerge in three settings:
+AIF's advantages emerge in specific settings that justify its use despite not achieving the highest raw SLO:
 
-\textbf{Partial observability.}
-When metrics are noisy or delayed, AIF's Bayesian belief update naturally integrates evidence over time, whereas the heuristic treats each observation independently.
-This is most evident in the oscillating scenario, where AIF's belief carries information across load waves.
+\textbf{Steady overload with structured offloading.}
+AIF achieves 92.1\% SLO in steady overload, outperforming the heuristic (90.9\%) while maintaining the highest offload utilization (22.8\%).
+This is AIF's strongest scenario: the belief converges quickly, the generative model accurately predicts the benefits of offloading, and the system reaches a stable mode allocation.
+This confirms that AIF's structured generative model enables effective cluster-level decision-making when the problem structure matches the model.
 
 \textbf{Zero-shot deployment.}
-Unlike DQN, which requires 5 training episodes per scenario, AIF operates from the first step using profiling-derived parameters.
-In deployment scenarios where the workload pattern is unknown a priori, AIF provides immediate functionality without a cold-start period.
+Unlike DQN, which requires 5 training episodes per scenario and still produces seed-dependent policies (burst std = 9.7\%), AIF operates from the first step using profiling-derived parameters.
+AIF's cross-run variance is moderate (std 1.4--4.5\%), reflecting physical system noise rather than algorithmic instability.
+In deployment scenarios where the workload pattern is unknown a priori, AIF provides immediate, predictable functionality without a cold-start period.
 
 \textbf{Interpretability.}
 At any step, the belief distribution $Q(s)$ and per-action EFE decomposition (pragmatic vs.\ epistemic contributions) can be inspected.
@@ -589,14 +679,20 @@ This enables operators to understand \emph{why} a particular action was chosen, 
 
 \subsection{Where AIF Struggles}
 
+\textbf{Burst response.}
+AIF's weakest result is burst (77.7\%), 9.9 pp below the heuristic.
+The combination of global cooldown ($\tau_c = 3$) and stochastic softmax selection means AIF cannot react as quickly as a threshold-based controller to sudden load spikes.
+The conservative cooldown, while preventing oscillation in other scenarios, becomes a liability when rapid sequential actions are needed.
+
 \textbf{Model misspecification.}
 AIF's performance is directly tied to the accuracy of its generative model.
-The v0$\to$v1 OFFLOAD likelihood correction demonstrates this starkly: a misspecified likelihood matrix reduced SLO by 13 percentage points.
+The v0$\to$v1 OFFLOAD likelihood correction demonstrates this starkly: a misspecified likelihood matrix reduced SLO by 8 percentage points.
 While the profiling-derived likelihood approach provides a systematic construction method, it cannot capture dynamics absent from the profiling data (e.g., thermal throttling under prolonged load, network congestion from concurrent offload streams).
 
-\textbf{Single-factor state abstraction.}
-The current model uses a single hidden variable (system load level) that conflates GPU contention and network state.
-Exploratory experiments with a two-factor model ($S_{\text{load}} \times S_{\text{offload}}$) showed improved robustness in some scenarios but regression in others, suggesting that richer state representations require correspondingly richer observation models to avoid overfitting.
+\textbf{Excessive SKIP usage.}
+AIF's skip ratio (9.3--16.3\%) is substantially higher than other controllers, reducing detection coverage.
+This arises from the uninformative SKIP likelihood ($[0.5, 0.5, 0.0]$), which does not penalize SKIP in the EFE computation.
+A more accurate SKIP model---reflecting that skipping yields zero detections and should be treated as a negative outcome---would likely reduce this behavior.
 
 \textbf{Stochastic policy.}
 The softmax action selection introduces variance between runs.
@@ -604,13 +700,14 @@ While this enables exploration, it means AIF does not guarantee the best action 
 
 \subsection{Implications for Edge Orchestration}
 
-Our findings suggest that AIF is a promising framework for edge orchestration in scenarios where:
+Our findings suggest that AIF is a principled alternative for edge orchestration in scenarios where:
 (1)~training data is unavailable or expensive to collect;
 (2)~workloads are non-stationary;
 (3)~operators require interpretable decision-making.
-However, the strong dependence on model specification implies that deploying AIF requires careful empirical profiling of the target hardware and workload characteristics.
+AIF trades raw performance for stability and transparency: it uses a structured generative model instead of training, achieving predictable zero-shot behavior (std $\leq$ 4.5\%) while DQN's training-based approach yields higher peaks but also higher variance (std up to 9.7\%).
 
 The key methodological contribution is the demonstration that \emph{how} offloading is modeled in the generative model matters more than the algorithmic sophistication of the inference procedure.
+The ablation hierarchy (OFFLOAD likelihood: 7.9 pp $>$ precision: 3.6 pp $>$ epistemic weight: 2.7 pp $>$ cooldown: 1.5 pp on SLO) reveals that for this real-world scheduling problem, AIF performance is primarily determined by the causal semantics of the likelihood model, not by the fine-tuning of the EFE computation or anti-oscillation hacks.
 This insight generalizes beyond AIF: any model-based scheduling approach must correctly represent the system-level effects of actions, not just their direct per-component outcomes.
 
 %% ============================================================================
@@ -645,8 +742,9 @@ We mitigate this through five independent runs per configuration, but some varia
 \label{sec:conclusion}
 
 We formulated multi-stream edge video orchestration as a POMDP and investigated Active Inference as a structured, training-free scheduler on a physical Jetson-based testbed.
-AIF achieves competitive SLO compliance (90.6\% average) without training data, compared to 87.1\% for the threshold-based heuristic and 92.6\% for DQN (which requires per-scenario training).
-Crucially, we demonstrated that the generative model's OFFLOAD likelihood specification---modeling system-level effects rather than per-stream metrics---accounts for a 13-percentage-point SLO improvement, making model construction the primary practical challenge for AIF deployment.
+AIF achieves 86.0\% average SLO satisfaction without training data, compared to 87.8\% for the threshold-based heuristic, 89.9\% for the myopic oracle, and 88.2\% for DQN (which requires per-scenario training and exhibits high cross-run variance).
+Crucially, we demonstrated that the generative model's OFFLOAD likelihood specification---modeling system-level effects rather than per-stream metrics---accounts for an 8-percentage-point SLO improvement, making model construction the primary practical challenge for AIF deployment.
+The ablation hierarchy further reveals that likelihood semantics dominate over precision tuning, epistemic weighting, and cooldown scheduling, providing clear guidance for practitioners.
 
 Our results position AIF not as a universally superior scheduler, but as a principled alternative for scenarios requiring zero-shot deployment, interpretable decisions, and belief-based adaptation under partial observability.
 Future work will explore automated model refinement from online data, multi-factor state representations, and scaling to larger heterogeneous clusters.
@@ -745,6 +843,50 @@ Future work will explore automated model refinement from online data, multi-fact
 \section{Extended Results}
 \label{app:results}
 
-% TODO: Add per-scenario detailed tables, time-series plots, belief evolution
+\Cref{tab:full_metrics} provides the complete per-controller metrics across all scenarios.
+
+\begin{table}[h]
+    \centering
+    \caption{Complete metrics (mean $\pm$ std, $N=5$). Sw = mode switches, Skip = skip ratio (\%), Offl = offload ratio (\%).}
+    \label{tab:full_metrics}
+    \scriptsize
+    \begin{tabular}{@{}llrrrr@{}}
+        \toprule
+        Controller & Scenario & SLO\% & Sw & Skip\% & Offl\% \\
+        \midrule
+        \multirow{4}{*}{No-Op}
+        & Ramp-up   & 48.9{\scriptsize$\pm$2.5} & 0 & 0.0 & 0.0 \\
+        & Burst     & 53.9{\scriptsize$\pm$1.7} & 0 & 0.0 & 0.0 \\
+        & Steady    & 76.1{\scriptsize$\pm$22.2} & 0 & 0.0 & 0.0 \\
+        & Oscill.   & 69.9{\scriptsize$\pm$3.2} & 0 & 0.0 & 0.0 \\
+        \midrule
+        \multirow{4}{*}{Heuristic}
+        & Ramp-up   & 86.3{\scriptsize$\pm$4.3} & 18.6{\scriptsize$\pm$2.4} & 7.6 & 10.3 \\
+        & Burst     & 87.6{\scriptsize$\pm$4.7} & 19.0{\scriptsize$\pm$3.4} & 2.5 & 12.4 \\
+        & Steady    & 90.9{\scriptsize$\pm$1.2} & 34.4{\scriptsize$\pm$2.9} & 1.9 & 8.0 \\
+        & Oscill.   & 86.4{\scriptsize$\pm$1.4} & 32.6{\scriptsize$\pm$3.0} & 4.3 & 5.6 \\
+        \midrule
+        \multirow{4}{*}{Myopic}
+        & Ramp-up   & 90.3{\scriptsize$\pm$0.7} & 9.0{\scriptsize$\pm$0.0} & 0.0 & 0.6 \\
+        & Burst     & 83.0{\scriptsize$\pm$0.4} & 7.0{\scriptsize$\pm$0.0} & 0.0 & 0.0 \\
+        & Steady    & 93.4{\scriptsize$\pm$0.5} & 7.0{\scriptsize$\pm$0.0} & 0.0 & 1.1 \\
+        & Oscill.   & 93.0{\scriptsize$\pm$0.6} & 16.0{\scriptsize$\pm$0.0} & 0.0 & 1.8 \\
+        \midrule
+        \multirow{4}{*}{DQN}
+        & Ramp-up   & 85.4{\scriptsize$\pm$5.9} & 17.0{\scriptsize$\pm$8.9} & 5.5 & 15.0 \\
+        & Burst     & 78.4{\scriptsize$\pm$9.7} & 33.0{\scriptsize$\pm$22.2} & 10.7 & 20.8 \\
+        & Steady    & 94.9{\scriptsize$\pm$2.2} & 75.6{\scriptsize$\pm$22.3} & 0.8 & 24.4 \\
+        & Oscill.   & 93.9{\scriptsize$\pm$3.7} & 25.2{\scriptsize$\pm$27.2} & 1.6 & 29.6 \\
+        \midrule
+        \multirow{4}{*}{AIF (v1)}
+        & Ramp-up   & 87.1{\scriptsize$\pm$3.8} & 18.6{\scriptsize$\pm$1.5} & 16.0 & 19.3 \\
+        & Burst     & 77.7{\scriptsize$\pm$4.5} & 19.2{\scriptsize$\pm$0.7} & 16.3 & 15.3 \\
+        & Steady    & 92.1{\scriptsize$\pm$1.4} & 28.2{\scriptsize$\pm$0.4} & 11.6 & 22.8 \\
+        & Oscill.   & 87.2{\scriptsize$\pm$3.4} & 36.6{\scriptsize$\pm$1.4} & 9.3 & 22.1 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+% Time-series plots and belief evolution figures to be included after generation.
 
 \end{document}
