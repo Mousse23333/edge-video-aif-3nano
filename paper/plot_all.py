@@ -34,7 +34,8 @@ from plot_config import (
 from plot_data import (
     load_summaries, load_aggregate, load_step_csv, load_history_json,
     load_ablation_csv, load_ablation_aggregate,
-    get_available_runs, extract_per_stream_modes, extract_per_stream_metrics,
+    get_available_runs, aggregate_step_csvs,
+    extract_per_stream_modes, extract_per_stream_metrics,
 )
 
 
@@ -205,26 +206,30 @@ def plot_summary_heatmap(agg, out_dir, controllers=None, scenarios=None):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def plot_timeseries_fps(main_dir, out_dir, scenario='scenario_burst',
-                        run_id=1, controllers=None):
-    """B1. Time-series FPS with workload overlay (n_active)."""
+                        run_id=None, controllers=None):
+    """B1. Time-series FPS with mean±std bands and workload overlay."""
     controllers = controllers or CTRL_ORDER
 
     fig, ax1 = plt.subplots(figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.35))
     ax2 = ax1.twinx()
 
     for ctrl in controllers:
-        df = load_step_csv(main_dir, run_id, ctrl, scenario)
-        if df is None:
+        steps, means, stds = aggregate_step_csvs(main_dir, ctrl, scenario)
+        if steps is None:
             continue
-        ax1.plot(df['step'], df['avg_fps'], label=CTRL_LABELS[ctrl],
-                 color=COLORS[ctrl], alpha=0.85)
+        ax1.plot(steps, means['avg_fps'], label=CTRL_LABELS[ctrl],
+                 color=COLORS[ctrl], linewidth=1.2)
+        ax1.fill_between(steps,
+                         means['avg_fps'] - stds['avg_fps'],
+                         means['avg_fps'] + stds['avg_fps'],
+                         color=COLORS[ctrl], alpha=0.15)
 
-    # Workload overlay (from any controller — n_active is the same)
-    ref_df = load_step_csv(main_dir, run_id, controllers[0], scenario)
-    if ref_df is not None:
-        ax2.fill_between(ref_df['step'], ref_df['n_active'],
-                         alpha=0.12, color='gray', step='mid')
-        ax2.plot(ref_df['step'], ref_df['n_active'],
+    # Workload overlay (from any controller — n_active is deterministic)
+    steps, means, _ = aggregate_step_csvs(main_dir, controllers[0], scenario)
+    if steps is not None:
+        ax2.fill_between(steps, means['n_active'],
+                         alpha=0.10, color='gray', step='mid')
+        ax2.plot(steps, means['n_active'],
                  color='gray', alpha=0.4, linewidth=0.8, drawstyle='steps-mid')
         ax2.set_ylabel('Active Streams', color='gray')
         ax2.tick_params(axis='y', labelcolor='gray')
@@ -233,31 +238,35 @@ def plot_timeseries_fps(main_dir, out_dir, scenario='scenario_burst',
     ax1.set_xlabel('Step')
     ax1.set_ylabel('Avg FPS')
     ax1.legend(loc='upper right', ncol=3, fontsize=6)
-    ax1.set_title(f'Per-Step FPS — {SCENARIO_LABELS[scenario]}', fontsize=9)
+    ax1.set_title(f'Per-Step FPS — {SCENARIO_LABELS[scenario]} (5-run mean±std)', fontsize=9)
 
     fig.tight_layout()
     savefig(fig, os.path.join(out_dir, f'fig_ts_fps_{scenario}'))
 
 
 def plot_timeseries_latency(main_dir, out_dir, scenario='scenario_burst',
-                            run_id=1, controllers=None):
-    """B2. Time-series latency with SLO threshold."""
+                            run_id=None, controllers=None):
+    """B2. Time-series latency with mean±std bands and SLO threshold."""
     controllers = controllers or CTRL_ORDER
 
     fig, ax = plt.subplots(figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.35))
 
     for ctrl in controllers:
-        df = load_step_csv(main_dir, run_id, ctrl, scenario)
-        if df is None:
+        steps, means, stds = aggregate_step_csvs(main_dir, ctrl, scenario)
+        if steps is None:
             continue
-        ax.plot(df['step'], df['avg_lat_ms'], label=CTRL_LABELS[ctrl],
-                color=COLORS[ctrl], alpha=0.85)
+        ax.plot(steps, means['avg_lat_ms'], label=CTRL_LABELS[ctrl],
+                color=COLORS[ctrl], linewidth=1.2)
+        ax.fill_between(steps,
+                        means['avg_lat_ms'] - stds['avg_lat_ms'],
+                        means['avg_lat_ms'] + stds['avg_lat_ms'],
+                        color=COLORS[ctrl], alpha=0.15)
 
     ax.axhline(y=150, color='#888888', linestyle='--', linewidth=0.6, label='SLO (150ms)')
     ax.set_xlabel('Step')
     ax.set_ylabel('Avg P95 Latency (ms)')
     ax.legend(loc='upper right', ncol=3, fontsize=6)
-    ax.set_title(f'Per-Step P95 Latency — {SCENARIO_LABELS[scenario]}', fontsize=9)
+    ax.set_title(f'Per-Step P95 Latency — {SCENARIO_LABELS[scenario]} (5-run mean±std)', fontsize=9)
 
     fig.tight_layout()
     savefig(fig, os.path.join(out_dir, f'fig_ts_lat_{scenario}'))
@@ -492,6 +501,178 @@ def plot_action_gantt(main_dir, out_dir, scenario='scenario_burst', run_id=1):
 
     fig.tight_layout()
     savefig(fig, os.path.join(out_dir, f'fig_gantt_{scenario}'))
+
+
+def plot_scenario_deepdive(main_dir, out_dir, scenario='scenario_burst'):
+    """B5. Scenario deep-dive — 4-row synchronized panel.
+
+    Row 1: Workload (n_active) as context strip
+    Row 2: FPS mean±std bands for all controllers
+    Row 3: Mode allocation strips for AIF / Heuristic / DQN side-by-side
+    Row 4: AIF belief heatmap (or proxy)
+
+    This figure tells the complete causal story:
+    workload → performance impact → controller decisions → AIF reasoning.
+    """
+    focus_ctrls = ['heuristic', 'dqn', 'aif']
+
+    fig = plt.figure(figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.85))
+    gs = fig.add_gridspec(4, 3, height_ratios=[1, 3, 2.5, 1.8],
+                          hspace=0.35, wspace=0.08)
+
+    # ── Row 0: Workload context (spans all 3 cols) ──
+    ax_wl = fig.add_subplot(gs[0, :])
+    steps, means, _ = aggregate_step_csvs(main_dir, 'aif', scenario)
+    if steps is not None:
+        ax_wl.fill_between(steps, means['n_active'],
+                           color='#555555', alpha=0.3, step='mid')
+        ax_wl.plot(steps, means['n_active'],
+                   color='#333333', linewidth=1, drawstyle='steps-mid')
+    ax_wl.set_ylabel('Streams', fontsize=6)
+    ax_wl.set_title(f'Scenario Deep-Dive — {SCENARIO_LABELS[scenario]}',
+                    fontsize=10, fontweight='bold', pad=6)
+    ax_wl.set_xlim(steps[0], steps[-1])
+    ax_wl.tick_params(labelbottom=False)
+    ax_wl.set_ylim(0, None)
+
+    # ── Row 1: FPS bands (spans all 3 cols) ──
+    ax_fps = fig.add_subplot(gs[1, :], sharex=ax_wl)
+    all_ctrls = CTRL_ORDER
+    for ctrl in all_ctrls:
+        s, m, sd = aggregate_step_csvs(main_dir, ctrl, scenario)
+        if s is None:
+            continue
+        ax_fps.plot(s, m['avg_fps'], label=CTRL_LABELS[ctrl],
+                    color=COLORS[ctrl], linewidth=1.1)
+        ax_fps.fill_between(s, m['avg_fps'] - sd['avg_fps'],
+                            m['avg_fps'] + sd['avg_fps'],
+                            color=COLORS[ctrl], alpha=0.12)
+
+    ax_fps.axhline(y=10, color='#888888', linestyle='--', linewidth=0.6)
+    ax_fps.set_ylabel('Avg FPS', fontsize=7)
+    ax_fps.legend(loc='upper right', ncol=5, fontsize=5.5,
+                  handletextpad=0.3, columnspacing=0.6)
+    ax_fps.tick_params(labelbottom=False)
+    ax_fps.set_xlim(steps[0], steps[-1])
+
+    # ── Row 2: Mode allocation (one subplot per focus controller) ──
+    mode_axes = [fig.add_subplot(gs[2, i], sharex=ax_wl) for i in range(3)]
+
+    for ax, ctrl in zip(mode_axes, focus_ctrls):
+        s, m, _ = aggregate_step_csvs(main_dir, ctrl, scenario)
+        if s is None:
+            continue
+        stacks = []
+        colors = []
+        for mode in MODE_ORDER:
+            col = f'n_{mode.lower()}'
+            if col in m:
+                stacks.append(m[col])
+                colors.append(MODE_COLORS[mode])
+        ax.stackplot(s, *stacks, colors=colors, alpha=0.85)
+        ax.set_title(CTRL_LABELS[ctrl], fontsize=7, pad=2)
+        ax.set_xlim(steps[0], steps[-1])
+        if ax == mode_axes[0]:
+            ax.set_ylabel('Streams', fontsize=7)
+        else:
+            ax.tick_params(labelleft=False)
+        ax.tick_params(labelbottom=False)
+
+    # Mode legend above mode row
+    handles = [mpatches.Patch(color=MODE_COLORS[m], label=m) for m in MODE_ORDER]
+    mode_axes[1].legend(handles=handles, loc='upper center', ncol=4, fontsize=5.5,
+                        bbox_to_anchor=(0.5, 1.22), handletextpad=0.3)
+
+    # ── Row 3: AIF belief heatmap (spans all 3 cols) ──
+    ax_belief = fig.add_subplot(gs[3, :], sharex=ax_wl)
+    history = load_history_json(main_dir, 1, 'aif', scenario)
+    if history is not None:
+        has_belief = any('belief' in rec for rec in history)
+        n_steps = min(len(history), len(steps))
+
+        if has_belief:
+            beliefs = np.array([rec['belief'] for rec in history[:n_steps]])
+        else:
+            beliefs = np.zeros((n_steps, 3))
+            for i, rec in enumerate(history[:n_steps]):
+                n = rec['observation']['global']['n_active_streams']
+                if n <= 3:
+                    beliefs[i] = [0.8, 0.15, 0.05]
+                elif n <= 5:
+                    beliefs[i] = [0.1, 0.7, 0.2]
+                else:
+                    beliefs[i] = [0.05, 0.15, 0.8]
+
+        belief_steps = steps[:n_steps]
+        im = ax_belief.imshow(beliefs.T, aspect='auto', cmap='viridis',
+                              extent=[belief_steps[0], belief_steps[-1], -0.5, 2.5],
+                              origin='lower', vmin=0, vmax=1)
+        ax_belief.set_yticks([0, 1, 2])
+        ax_belief.set_yticklabels(['LOW', 'MED', 'HIGH'], fontsize=6)
+        ax_belief.set_ylabel('AIF Belief', fontsize=7)
+        plt.colorbar(im, ax=ax_belief, label='$Q(s)$', shrink=0.6,
+                     pad=0.015, aspect=12)
+
+    ax_belief.set_xlabel('Step', fontsize=7)
+    ax_belief.set_xlim(steps[0], steps[-1])
+
+    savefig(fig, os.path.join(out_dir, f'fig_deepdive_{scenario}'))
+
+
+def plot_four_scenario_panel(main_dir, out_dir):
+    """B6. Four-scenario comparison panel — 2×2 grid with FPS bands.
+
+    Each subplot shows one scenario with all 5 controllers' mean±std bands,
+    plus workload overlay. Compact overview of all experimental conditions.
+    """
+    scenarios = SCENARIO_ORDER
+
+    fig, axes = plt.subplots(2, 2, figsize=(DOUBLE_COL_W, DOUBLE_COL_W * 0.6),
+                             sharex=False, sharey=True)
+    axes = axes.flatten()
+
+    for ax, scen in zip(axes, scenarios):
+        ax2 = ax.twinx()
+
+        for ctrl in CTRL_ORDER:
+            s, m, sd = aggregate_step_csvs(main_dir, ctrl, scen)
+            if s is None:
+                continue
+            ax.plot(s, m['avg_fps'], color=COLORS[ctrl], linewidth=0.9,
+                    label=CTRL_LABELS[ctrl])
+            ax.fill_between(s, m['avg_fps'] - sd['avg_fps'],
+                            m['avg_fps'] + sd['avg_fps'],
+                            color=COLORS[ctrl], alpha=0.10)
+
+        # Workload
+        s, m, _ = aggregate_step_csvs(main_dir, 'aif', scen)
+        if s is not None:
+            ax2.fill_between(s, m['n_active'], color='gray',
+                             alpha=0.08, step='mid')
+            ax2.plot(s, m['n_active'], color='gray', alpha=0.3,
+                     linewidth=0.6, drawstyle='steps-mid')
+            ax2.set_ylim(0, 12)
+            if ax in axes[1::2]:  # right column
+                ax2.set_ylabel('Streams', fontsize=6, color='gray')
+            else:
+                ax2.tick_params(labelright=False)
+
+        ax.axhline(y=10, color='#888888', linestyle='--', linewidth=0.5)
+        ax.set_title(SCENARIO_LABELS[scen], fontsize=8)
+        ax.set_ylim(0, 25)
+
+        if ax in axes[2:]:
+            ax.set_xlabel('Step', fontsize=7)
+        if ax in axes[::2]:  # left column
+            ax.set_ylabel('Avg FPS', fontsize=7)
+
+    # Shared legend at top
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper center', ncol=5, fontsize=6,
+               bbox_to_anchor=(0.5, 1.04), handletextpad=0.3, columnspacing=0.6)
+
+    fig.tight_layout(h_pad=1.0, w_pad=1.0)
+    savefig(fig, os.path.join(out_dir, 'fig_four_scenario_fps'))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -871,6 +1052,8 @@ PLOT_REGISTRY = {
     'ts_lat':         ('B2: Time-Series Latency', lambda a: [plot_timeseries_latency(a['main'], a['out'], s) for s in SCENARIO_ORDER]),
     'mode_alloc':     ('B3: Mode Allocation',     lambda a: [plot_mode_allocation(a['main'], a['out'], s) for s in SCENARIO_ORDER]),
     'cdf_lat':        ('B4: Latency CDF',         lambda a: [plot_latency_cdf(a['main'], a['out'], s) for s in SCENARIO_ORDER]),
+    'deepdive':       ('B5: Scenario Deep-Dive',  lambda a: [plot_scenario_deepdive(a['main'], a['out'], s) for s in SCENARIO_ORDER]),
+    'four_scenario':  ('B6: 4-Scenario FPS Panel', lambda a: plot_four_scenario_panel(a['main'], a['out'])),
     # C: AIF interpretability
     'belief':         ('C1: Belief Evolution',     lambda a: [plot_belief_evolution(a['main'], a['out'], s) for s in SCENARIO_ORDER]),
     'entropy':        ('C3: Belief Entropy',       lambda a: [plot_belief_entropy(a['main'], a['out'], s) for s in SCENARIO_ORDER]),

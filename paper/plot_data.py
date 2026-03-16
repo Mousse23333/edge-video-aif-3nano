@@ -83,6 +83,37 @@ def get_available_runs(experiment_dir):
     return runs
 
 
+def aggregate_step_csvs(experiment_dir, controller, scenario, runs=None):
+    """Load step CSVs across multiple runs and compute per-step mean/std.
+
+    Returns (steps, means_dict, stds_dict) where means_dict and stds_dict
+    map column names to arrays. Uses min common length for alignment.
+    """
+    if runs is None:
+        runs = get_available_runs(experiment_dir)
+    dfs = []
+    for run_id in runs:
+        df = load_step_csv(experiment_dir, run_id, controller, scenario)
+        if df is not None:
+            dfs.append(df)
+    if not dfs:
+        return None, None, None
+
+    min_len = min(len(df) for df in dfs)
+    numeric_cols = [c for c in dfs[0].columns
+                    if c not in ('step', 'action') and np.issubdtype(dfs[0][c].dtype, np.number)]
+
+    steps = dfs[0]['step'].values[:min_len]
+    means = {}
+    stds = {}
+    for col in numeric_cols:
+        stacked = np.array([df[col].values[:min_len] for df in dfs])
+        means[col] = stacked.mean(axis=0)
+        stds[col] = stacked.std(axis=0)
+
+    return steps, means, stds
+
+
 def extract_per_stream_modes(history):
     """
     Extract per-stream mode at each step from raw history JSON.
