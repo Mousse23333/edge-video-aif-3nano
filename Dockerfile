@@ -17,6 +17,7 @@ COPY nano_inference_server.py .
 COPY test_aif_only.py .
 COPY run_multi_experiment.py .
 COPY run_ablation.py .
+COPY run_extra_experiments.py .
 COPY run_overnight.sh .
 
 # Pre-download model into /app so it's baked into the image

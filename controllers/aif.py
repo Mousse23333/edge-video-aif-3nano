@@ -145,6 +145,7 @@ class AIFController(ControllerInterface):
 
     def __init__(self, config_dir="/app/config",
                  offload_likelihood=None,
+                 skip_likelihood=None,
                  precision=4.0,
                  epistemic_weight=0.3,
                  cooldown=3):
@@ -171,6 +172,8 @@ class AIFController(ControllerInterface):
         self.likelihood = {k: v.copy() for k, v in LIKELIHOOD.items()}
         if offload_likelihood is not None:
             self.likelihood["OFFLOAD"] = np.array(offload_likelihood)
+        if skip_likelihood is not None:
+            self.likelihood["SKIP"] = np.array(skip_likelihood)
 
         # Preferred observation distribution C
         self.C = np.array([0.85, 0.12, 0.03])
