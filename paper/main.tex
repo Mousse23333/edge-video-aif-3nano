@@ -711,7 +711,7 @@ AIF's belief state provides a window into the controller's internal reasoning th
 At each step, $Q(s) = [p_{\textsc{Low}}, p_{\textsc{Medium}}, p_{\textsc{High}}]$ can be inspected to verify whether the controller's estimate of system load aligns with reality.
 
 \textbf{Where beliefs help.}
-In steady overload, the belief rapidly converges to $p_{\textsc{High}} > 0.8$ within 3--5 steps, after which the controller consistently selects demotion actions (LITE or OFFLOAD).
+In steady overload, the belief rapidly converges to $p_{\textsc{High}} > 0.8$ within 3--5 steps, after which the controller consistently selects demotion actions (LITE or OFFLOAD), as illustrated in \Cref{fig:belief_steady}.
 This convergence is faster than the heuristic's reactive approach, which requires SLO violations before acting.
 
 \textbf{Failure case: burst onset.}
@@ -723,6 +723,13 @@ This explains AIF's 9.9 pp deficit to the heuristic in the burst scenario: the h
 The per-action EFE can be decomposed into pragmatic and epistemic components.
 In steady overload, pragmatic values dominate ($>$90\% of the total EFE magnitude), confirming that the controller is exploitation-focused when beliefs are confident.
 During load transitions, the epistemic term briefly rises as belief entropy increases, but this signal is small relative to pragmatic differences between actions.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{figures/fig_belief_scenario_steady_overload.pdf}
+    \caption{AIF belief state $Q(s)$ evolution in the steady overload scenario (6 sustained streams). Within 3--5 control steps the belief concentrates on \textsc{High} load ($p_{\textsc{High}} > 0.8$), after which the controller consistently selects demotion actions (LITE or OFFLOAD). The rapid convergence enables proactive resource management before SLO violations accumulate, an advantage over reactive heuristics that require observed violations before acting.}
+    \label{fig:belief_steady}
+\end{figure}
 
 %% ============================================================================
 \section{Discussion}
@@ -962,6 +969,7 @@ Future work will explore automated likelihood learning from online data, multi-f
 
 \Cref{fig:slo_bar} presents the SLO satisfaction rates as a grouped bar chart.
 \Cref{fig:skip_tradeoff} visualizes the trade-off between SLO and skip ratio under different SKIP likelihood settings.
+\Cref{fig:ablation_combined} provides a side-by-side comparison of all five ablation parameters on a common scale, enabling direct magnitude comparison across generative model components.
 
 \begin{figure}[h]
     \centering
@@ -975,6 +983,13 @@ Future work will explore automated likelihood learning from online data, multi-f
     \includegraphics[width=\columnwidth]{figures/fig_skip_tradeoff.pdf}
     \caption{SKIP likelihood trade-off: SLO vs.\ skip ratio. Each point represents one variant$\times$scenario combination. Arrows show the direction of improvement from baseline to moderate. Penalizing SKIP consistently improves SLO while reducing skip ratio across all scenarios.}
     \label{fig:skip_tradeoff}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\columnwidth]{figures/fig_ablation_combined.pdf}
+    \caption{Combined ablation sensitivity across all five generative model parameters (OFFLOAD likelihood, precision $\beta$, epistemic weight $w_e$, cooldown $\tau_c$, SKIP likelihood). Each panel shows 3-run mean SLO per scenario as the parameter varies. The vertical scale is held constant across panels to enable direct magnitude comparison. OFFLOAD likelihood and SKIP likelihood produce the largest and most consistent effects ($\sim$8~pp each), while precision, epistemic weight, and cooldown contribute secondary effects ($<$4~pp).}
+    \label{fig:ablation_combined}
 \end{figure}
 
 \end{document}
