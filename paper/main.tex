@@ -139,12 +139,12 @@ The cluster comprises:
 This architecture reflects a hierarchical fog-edge topology: the Orin acts as a fog-level coordinator making scheduling decisions, while the Nanos serve as offload targets that extend the cluster's inference capacity.
 The asymmetry is deliberate---the coordinator has full visibility of all stream states and makes centralized scheduling decisions, while offload nodes are stateless workers.
 
-% TODO: \begin{figure}[t]
-%     \centering
-%     \includegraphics[width=\columnwidth]{figures/architecture.pdf}
-%     \caption{System architecture. The Orin coordinator runs the controller loop and local inference. Offload streams are sent via HTTP POST to Nano workers.}
-%     \label{fig:architecture}
-% \end{figure}
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.85\textwidth]{figures/architecture.pdf}
+    \caption{System architecture.  The Orin coordinator hosts the control loop and local GPU inference (FULL / LITE modes), while two Nano offload nodes serve as stateless HTTP inference workers.  The bottom panel details the AIF controller's internal pipeline: Bayesian belief update, generative model (likelihood \textbf{A}, transition \textbf{B}), expected free energy computation, and precision-weighted action selection.}
+    \label{fig:architecture}
+\end{figure*}
 
 \subsection{Streams, Nodes, and Resource Contention}
 
