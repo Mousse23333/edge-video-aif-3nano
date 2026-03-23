@@ -45,7 +45,7 @@ Daniel Wang
 Heterogeneous edge systems increasingly execute multiple concurrent AI video streams under strict latency, accuracy, and energy constraints.
 However, schedulers only observe noisy runtime metrics, while the true joint resource and network state remains partially hidden.
 This paper formulates multi-stream edge video orchestration as a Partially Observable Markov Decision Process (POMDP) and investigates Active Inference (AIF) as a structured belief-based scheduler.
-We implement a physical heterogeneous testbed comprising an NVIDIA Jetson AGX Orin as the primary inference node and two Jetson Orin Nano nodes as offload targets, define a finite systems-level action space with four execution modes (FULL, LITE, SKIP, OFFLOAD), and compare AIF against four baselines---No-Op, threshold-based heuristic, myopic greedy, and DQN---under an identical observation interface.
+We implement a physical three-node Jetson Orin Nano cluster in which one node acts as coordinator running the control loop and local GPU inference, and two nodes serve as stateless offload targets, define a finite systems-level action space with four execution modes (FULL, LITE, SKIP, OFFLOAD), and compare AIF against four baselines---No-Op, threshold-based heuristic, myopic greedy, and DQN---under an identical observation interface.
 Across four workload scenarios with five independent runs, AIF achieves 86.0\% average SLO satisfaction without any training data, compared to 87.8\% for the threshold-based heuristic, 89.9\% for the myopic oracle, and 88.2\% for DQN (which requires per-scenario training and exhibits high seed-dependent variance, confirmed across 8 runs).
 A sensitivity analysis of the AIF generative model reveals that correcting the OFFLOAD likelihood from per-stream to system-level semantics improves SLO compliance by 8 percentage points.
 Furthermore, tuning the SKIP likelihood to penalize frame-skipping raises AIF from 85.3\% to 93.2\%, surpassing all baselines and demonstrating that model specification---not algorithmic complexity---is the primary determinant of AIF performance.
@@ -60,7 +60,7 @@ Rather than claiming superiority, we characterize when AIF's belief-based reason
 
 Edge video analytics is a growing workload class in domains ranging from autonomous driving to smart infrastructure, where multiple camera streams must be processed concurrently under strict latency and throughput constraints~\cite{ananthanarayanan2017real}.
 Unlike cloud deployments, edge nodes operate under tight GPU memory, thermal, and power envelopes.
-When multiple streams share a single GPU, they compete for compute cycles: adding a sixth stream to an NVIDIA Jetson AGX Orin running YOLOv8n drops per-stream throughput from 10.6 to 8.7~FPS---below the 10~FPS service-level objective (SLO)---while P95 latency rises from 92 to 107~ms.
+When multiple streams share a single GPU, they compete for compute cycles: adding a sixth stream to a Jetson Orin Nano running YOLOv8n drops per-stream throughput from 10.6 to 8.7~FPS---below the 10~FPS service-level objective (SLO)---while P95 latency rises from 92 to 107~ms.
 
 Existing approaches to multi-stream scheduling fall into two broad categories.
 \emph{Threshold-based heuristics} react to SLO violations but lack foresight and oscillate under non-stationary loads.
@@ -129,15 +129,15 @@ This paper addresses both gaps through physical experiments on constrained edge 
 
 \subsection{Target System}
 
-Our target system is a heterogeneous edge cluster for multi-stream object detection, illustrated in~\Cref{fig:architecture}.
+Our target system is a three-node edge cluster for multi-stream object detection, illustrated in~\Cref{fig:architecture}.
 The cluster comprises:
 \begin{itemize}[leftmargin=*]
-    \item \textbf{Primary node} (NVIDIA Jetson AGX Orin): 2048 CUDA cores, 8~GB unified memory, JetPack R36.5. Hosts the controller logic and executes local inference using YOLOv8n~\cite{jocher2023yolov8}.
-    \item \textbf{Offload nodes} (2$\times$ NVIDIA Jetson Orin Nano): Each runs a lightweight HTTP inference server accepting JPEG-encoded frames and returning JSON detection results. Connected via Gigabit Ethernet on a local subnet (192.168.1.x).
+    \item \textbf{Coordinator node} (NVIDIA Jetson Orin Nano 8GB): 1024 CUDA cores, 8~GB unified memory, JetPack R36.5. Hosts the controller logic and executes local batch inference using YOLOv8n~\cite{jocher2023yolov8}.
+    \item \textbf{Offload nodes} (2$\times$ NVIDIA Jetson Orin Nano 8GB, identical hardware): Each runs a lightweight HTTP inference server accepting JPEG-encoded frames and returning JSON detection results. Connected via Gigabit Ethernet on a local subnet (192.168.1.x).
 \end{itemize}
 
-This architecture reflects a hierarchical fog-edge topology: the Orin acts as a fog-level coordinator making scheduling decisions, while the Nanos serve as offload targets that extend the cluster's inference capacity.
-The asymmetry is deliberate---the coordinator has full visibility of all stream states and makes centralized scheduling decisions, while offload nodes are stateless workers.
+This architecture reflects a hierarchical topology: while all three nodes share identical hardware, the coordinator node runs the scheduling logic and local GPU inference, while the two worker nodes serve as stateless offload targets that extend the cluster's peak inference throughput.
+The role asymmetry is deliberate---the coordinator has full visibility of all stream states and makes centralized scheduling decisions, while offload nodes are stateless workers.
 
 \begin{figure*}[t]
     \centering
@@ -153,7 +153,7 @@ Unlike generic microservice autoscaling, multi-stream video inference exhibits \
 
 \begin{table}[t]
     \centering
-    \caption{Per-stream performance vs.\ concurrent stream count on Jetson AGX Orin (YOLOv8n, 720p input). SLO boundary: FPS $\geq$ 10, P95 $\leq$ 150~ms.}
+    \caption{Per-stream performance vs.\ concurrent stream count on the coordinator Jetson Orin Nano (YOLOv8n, 720p input). SLO boundary: FPS $\geq$ 10, P95 $\leq$ 150~ms.}
     \label{tab:profiling}
     \small
     \begin{tabular}{@{}lrrrrr@{}}
@@ -404,14 +404,14 @@ DQN is trained for 5 episodes on the target scenario before evaluation, with net
 
 \subsection{Hardware and Cluster}
 
-The testbed comprises three NVIDIA Jetson nodes connected via Gigabit Ethernet:
+The testbed comprises three identical Jetson Orin Nano 8GB nodes connected via Gigabit Ethernet:
 \begin{itemize}[leftmargin=*]
-    \item \textbf{Orin} (primary): Jetson AGX Orin, 2048 CUDA cores, 8~GB unified memory, JetPack R36.5 (L4T R36.5). Runs the controller loop and local batch inference.
-    \item \textbf{Nano2} (192.168.1.52): Jetson Orin Nano, runs \texttt{nano\_inference\_server.py} on port 8765.
-    \item \textbf{Nano3} (192.168.1.53): Jetson Orin Nano, runs the same inference server.
+    \item \textbf{Coordinator} (primary): Jetson Orin Nano 8GB, 1024 CUDA cores, 8~GB unified memory, JetPack R36.5 (L4T R36.5). Runs the controller loop and local batch inference.
+    \item \textbf{Worker1} (192.168.1.52): Jetson Orin Nano 8GB (identical hardware), runs \texttt{nano\_inference\_server.py} on port 8765.
+    \item \textbf{Worker2} (192.168.1.53): Jetson Orin Nano 8GB (identical hardware), runs the same inference server.
 \end{itemize}
 
-OFFLOAD involves real HTTP POST of JPEG-encoded frames from the Orin to a Nano, real YOLOv8n inference on the Nano's GPU, and JSON detection results returned to the Orin.
+OFFLOAD involves real HTTP POST of JPEG-encoded frames from the coordinator to a worker node, real YOLOv8n inference on the worker's GPU, and JSON detection results returned to the coordinator.
 Measured offload performance: $\sim$7~FPS per Nano stream, $\sim$140~ms round-trip latency.
 Maximum concurrent offload streams: $K_{\max} = 2$ (one per Nano).
 
@@ -839,7 +839,7 @@ Future work will explore automated likelihood learning from online data, multi-f
 
 \begin{table}[h]
     \centering
-    \caption{Complete per-stream profiling on Jetson AGX Orin (YOLOv8n, 720p input, batch inference).}
+    \caption{Complete per-stream profiling on the coordinator Jetson Orin Nano (YOLOv8n, 720p input, batch inference).}
     \label{tab:profiling_full}
     \small
     \begin{tabular}{@{}llrr@{}}
@@ -900,7 +900,7 @@ Future work will explore automated likelihood learning from online data, multi-f
 
 \begin{table}[h]
     \centering
-    \caption{Mode switch costs measured on Jetson AGX Orin (4 streams, batch inference). Downgrade is cheap; upgrade incurs cold-start transients.}
+    \caption{Mode switch costs measured on the coordinator Jetson Orin Nano (4 streams, batch inference). Downgrade is cheap; upgrade incurs cold-start transients.}
     \label{tab:switch_cost}
     \small
     \begin{tabular}{@{}lrrr@{}}
