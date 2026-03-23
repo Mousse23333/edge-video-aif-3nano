@@ -48,7 +48,7 @@ This paper formulates multi-stream edge video orchestration as a Partially Obser
 We implement a physical three-node Jetson Orin Nano cluster in which one node acts as coordinator running the control loop and local GPU inference, and two nodes serve as stateless offload targets, define a finite systems-level action space with four execution modes (FULL, LITE, SKIP, OFFLOAD), and compare AIF against four baselines---No-Op, threshold-based heuristic, myopic greedy, and DQN---under an identical observation interface.
 Across four workload scenarios with five independent runs, AIF achieves 86.0\% average SLO satisfaction without any training data, compared to 87.8\% for the threshold-based heuristic, 89.9\% for the myopic oracle, and 88.2\% for DQN (which requires per-scenario training and exhibits high seed-dependent variance, confirmed across 8 runs).
 A sensitivity analysis of the AIF generative model reveals that correcting the OFFLOAD likelihood from per-stream to system-level semantics improves SLO compliance by 8 percentage points.
-Furthermore, tuning the SKIP likelihood to penalize frame-skipping raises AIF from 85.3\% to 93.2\%, surpassing all baselines and demonstrating that model specification---not algorithmic complexity---is the primary determinant of AIF performance.
+Furthermore, tuning the SKIP likelihood to penalize frame-skipping raises AIF from 85.3\% to 93.2\% in ablation (vs.\ 86.0\% in the main five-run evaluation), surpassing all baselines and demonstrating that model specification---not algorithmic complexity---is the primary determinant of AIF performance.
 Rather than claiming superiority, we characterize when AIF's belief-based reasoning improves adaptation and interpretability, and where model misspecification limits its benefits.
 \end{abstract}
 
@@ -69,7 +69,7 @@ Both approaches treat the scheduling problem as fully observable, ignoring the f
 
 \subsection{Problem Statement}
 
-We study multi-stream video inference scheduling on a heterogeneous edge cluster, where each stream may be processed locally at full or reduced resolution, temporarily skipped, or offloaded to a remote node.
+We study multi-stream video inference scheduling on a three-node edge cluster with role-asymmetric nodes, where each stream may be processed locally at full or reduced resolution, temporarily skipped, or offloaded to a remote worker node.
 The scheduler observes only noisy per-stream metrics (FPS, P95 latency) and aggregate GPU utilization, while the true joint system load state---encompassing GPU contention, thermal throttling, network congestion, and queueing effects---remains partially hidden.
 The objective is to maximize SLO compliance (per-stream FPS $\geq$ 10, P95 latency $\leq$ 150~ms) while minimizing detection coverage loss and mode switching overhead.
 
@@ -142,7 +142,7 @@ The role asymmetry is deliberate---the coordinator has full visibility of all st
 \begin{figure*}[t]
     \centering
     \includegraphics[width=0.85\textwidth]{figures/architecture.pdf}
-    \caption{System architecture.  The Orin coordinator hosts the control loop and local GPU inference (FULL / LITE modes), while two Nano offload nodes serve as stateless HTTP inference workers.  The bottom panel details the AIF controller's internal pipeline: Bayesian belief update, generative model (likelihood \textbf{A}, transition \textbf{B}), expected free energy computation, and precision-weighted action selection.}
+    \caption{System architecture.  The coordinator node hosts the control loop and local GPU inference (FULL / LITE modes), while two identical worker nodes serve as stateless HTTP inference workers.  The bottom panel details the AIF controller's internal pipeline: Bayesian belief update, generative model (likelihood \textbf{A}, transition \textbf{B}), expected free energy computation, and precision-weighted action selection.}
     \label{fig:architecture}
 \end{figure*}
 
@@ -235,10 +235,10 @@ Each mode has a distinct systems-level effect:
     \item \textbf{FULL}: Local GPU inference at input resolution 640$\times$640. Highest detection quality but highest GPU cost.
     \item \textbf{LITE}: Local GPU inference at reduced resolution 320$\times$320. Extends the SLO boundary from 5 to 7 streams, at the cost of reduced detection count.
     \item \textbf{SKIP}: No inference; passthrough only. Zero GPU cost but zero detections.
-    \item \textbf{OFFLOAD}: Frame sent via HTTP POST to a Nano node for remote inference. Zero local GPU cost; detection results returned as JSON. Bounded by the number of available offload nodes ($K_{\max} = 2$).
+    \item \textbf{OFFLOAD}: Frame sent via HTTP POST to a worker node for remote inference. Zero local GPU cost; detection results returned as JSON. Bounded by the number of available worker nodes ($K_{\max} = 2$).
 \end{itemize}
 
-Constraints enforce operational limits: at most 30\% of active streams may be in SKIP mode (to maintain minimum detection coverage), and OFFLOAD is bounded by the number of physical Nano nodes.
+Constraints enforce operational limits: at most 30\% of active streams may be in SKIP mode (to maintain minimum detection coverage), and OFFLOAD is bounded by the number of physical worker nodes.
 A minimum dwell time prevents rapid mode oscillation (e.g., 2 control windows in SKIP before exit, to amortize cold-start cost).
 
 \subsection{Objectives and Constraints}
@@ -412,8 +412,8 @@ The testbed comprises three identical Jetson Orin Nano 8GB nodes connected via G
 \end{itemize}
 
 OFFLOAD involves real HTTP POST of JPEG-encoded frames from the coordinator to a worker node, real YOLOv8n inference on the worker's GPU, and JSON detection results returned to the coordinator.
-Measured offload performance: $\sim$7~FPS per Nano stream, $\sim$140~ms round-trip latency.
-Maximum concurrent offload streams: $K_{\max} = 2$ (one per Nano).
+Measured offload performance: $\sim$7~FPS per offload stream, $\sim$140~ms round-trip latency.
+Maximum concurrent offload streams: $K_{\max} = 2$ (one per worker node).
 
 \subsection{Software Stack}
 
@@ -429,7 +429,7 @@ We define four scenarios that stress different aspects of adaptive scheduling:
     \item \textbf{Ramp-up} (60~s): Streams added incrementally from 3 to 7, testing gradual degradation response.
     \item \textbf{Burst} (60~s): Stable 4-stream load, then 3 streams added simultaneously at $t=15$~s and removed at $t=35$~s, testing reaction and recovery speed.
     \item \textbf{Steady overload} (90~s): 6 streams sustained, testing convergence to a stable mode allocation under persistent pressure.
-    \item \textbf{Oscillating} (120~s): Three waves of 3 additional streams (added/removed at 20~s intervals), with a final wave of 4, testing robustness to periodic load changes.
+    \item \textbf{Oscillating} (120~s): Three successive waves each adding 3 streams for 20~s then removing them, followed by a final wave adding 4 streams, testing robustness to periodic load changes.
 \end{enumerate}
 All streams use the same 720p traffic surveillance video, looped as needed.
 
@@ -468,10 +468,10 @@ We report mean $\pm$ standard deviation across runs.
         Controller & Ramp-up & Burst & Steady & Oscill. & Avg \\
         \midrule
         No-Op     & 48.9{\scriptsize$\pm$2.5} & 53.9{\scriptsize$\pm$1.7} & 76.1{\scriptsize$\pm$22.2} & 69.9{\scriptsize$\pm$3.2} & 62.2 \\
-        Heuristic & \textbf{86.3}{\scriptsize$\pm$4.3} & \textbf{87.6}{\scriptsize$\pm$4.7} & 90.9{\scriptsize$\pm$1.2} & 86.4{\scriptsize$\pm$1.4} & 87.8 \\
+        Heuristic & 86.3{\scriptsize$\pm$4.3} & \textbf{87.6}{\scriptsize$\pm$4.7} & 90.9{\scriptsize$\pm$1.2} & 86.4{\scriptsize$\pm$1.4} & 87.8 \\
         Myopic    & 90.3{\scriptsize$\pm$0.7} & 83.0{\scriptsize$\pm$0.4} & 93.4{\scriptsize$\pm$0.5} & 93.0{\scriptsize$\pm$0.6} & 89.9 \\
         DQN       & 85.4{\scriptsize$\pm$5.9} & 78.4{\scriptsize$\pm$9.7} & \textbf{94.9}{\scriptsize$\pm$2.2} & \textbf{93.9}{\scriptsize$\pm$3.7} & 88.2 \\
-        AIF (v1)  & 87.1{\scriptsize$\pm$3.8} & 77.7{\scriptsize$\pm$4.5} & 92.1{\scriptsize$\pm$1.4} & 87.2{\scriptsize$\pm$3.4} & 86.0 \\
+        AIF (v1)  & \textbf{87.1}{\scriptsize$\pm$3.8} & 77.7{\scriptsize$\pm$4.5} & 92.1{\scriptsize$\pm$1.4} & 87.2{\scriptsize$\pm$3.4} & 86.0 \\
         \bottomrule
     \end{tabular}
 \end{table}
@@ -690,13 +690,13 @@ Notably, mode switch counts remain unchanged across variants ($\sim$16/19/27/36 
 \end{figure}
 
 This result complements the OFFLOAD likelihood finding: both demonstrate that the AIF generative model's likelihood matrices are the primary lever for performance improvement.
-The combined effect of system-level OFFLOAD semantics (v0$\to$v1: +7.9~pp) and SKIP penalization (baseline$\to$moderate: +7.9~pp) suggests that with both corrections applied, AIF could potentially exceed 93\% average SLO---surpassing all baselines including the myopic oracle (89.9\%).
+The combined effect of system-level OFFLOAD semantics (v0$\to$v1: +7.9~pp) and SKIP penalization (baseline$\to$moderate: +7.9~pp) is already realized in the moderate-SKIP variant, which uses v1 OFFLOAD and achieves 93.2\% average SLO---surpassing all baselines including the myopic oracle (89.9\%).
 
 \subsubsection{OFFLOAD On/Off}
 
-We compare all five controllers with OFFLOAD enabled vs.\ disabled to quantify the value of heterogeneous offloading independent of the scheduling policy.
+We compare all five controllers with OFFLOAD enabled vs.\ disabled to quantify the value of cluster-level offloading independent of the scheduling policy.
 
-Comparing all controllers with OFFLOAD enabled vs.\ disabled (single-run):
+The following figures are from a single indicative run per condition (not replicated); they characterize directional trends rather than statistically precise estimates.
 AIF improves from 83.1\% to 86.5\% (+3.4 pp) with OFFLOAD;
 heuristic from 76.4\% to 87.3\% (+10.9 pp);
 DQN from 78.5\% to 91.8\% (+13.3 pp);
