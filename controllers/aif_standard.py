@@ -38,6 +38,41 @@ Module Map (标准 AIF 七模块映射):
              The agent refines its world model through experience.
 ====================================================================
 
+KNOWN LIMITATIONS (已知近似与设计折中):
+--------------------------------------------------------------------
+  L1 — ABSTRACT vs CONCRETE POLICY SEMANTICS
+       Policies enumerate abstract action types {NOOP, DEMOTE, …},
+       not concrete (stream_id, mode) pairs. EFE G(π) is evaluated
+       against type-level transitions B1/B2 (expected average effect
+       of each action type). Execution grounds each abstract action
+       to a specific stream via _ground_action(), whose stream
+       selection is heuristic and outside the generative model.
+       → The AIF layer reasons over a type-level POMDP; execution
+         implements a token-level MDP. B-matrix learning will absorb
+         grounding variance as if it were transition stochasticity.
+       Proper fix: expand state×action space to include per-stream
+       identity, or learn stream selection jointly.
+
+  L2 — FACTORIZED JOINT TRANSITION
+       The joint rollout Q_joint_next = B1u @ Q_joint @ B2u.T
+       assumes s1 and s2 transitions are action-conditionally
+       independent. For the current B1/B2 this is exact; if an
+       action couples both factors (e.g. OFFLOAD simultaneously
+       reduces load AND increases offload level), a fully joint
+       B[(s1',s2'),(s1,s2),u] would be needed.
+
+  L3 — SOFT B-UPDATE CONFLATES DRIFT WITH TRANSITION
+       Module 7 uses prev_qs × current_qs to update B counts,
+       which mixes inference correction with genuine state change.
+       Structurally acceptable for online prototyping; reviewers
+       may flag this in a rigorous experimental setting.
+
+  L4 — E(π) IS NOT LEARNED
+       The policy prior E is set once per episode from action costs.
+       It functions as an intervention-bias regularizer, not as a
+       learned habit distribution in the canonical AIF sense.
+====================================================================
+
 State Factors (隐藏状态因子):
   s1: load_level   ∈ {LOW, MED, HIGH}     — local GPU contention
   s2: offload_level ∈ {NONE, PARTIAL, FULL} — offload utilization
@@ -162,9 +197,14 @@ def build_B1():
     Shape: (N_S1, N_S1, N_ACTIONS) — B1[:, :, u] is transition matrix
     for action u, where B1[s', s, u] = P(s_load'=s' | s_load=s, u).
 
-    Semantics:
-      DEMOTE/OFFLOAD → reduces local GPU load → shift toward LOW
-      PROMOTE/RECALL → increases local GPU load → shift toward HIGH
+    Semantics (ABSTRACT — see L1 in module docstring):
+      These probabilities encode the *expected average* effect of each
+      action type on the load state, marginalised over which specific
+      stream will be selected by _ground_action(). The actual state
+      change depends on the stream chosen and its current mode.
+
+      DEMOTE/OFFLOAD → expected to reduce local GPU load → toward LOW
+      PROMOTE/RECALL → expected to increase local GPU load → toward HIGH
       NOOP → mostly self-transition with slight drift
     """
     B1 = np.zeros((N_S1, N_S1, N_ACTIONS))
@@ -260,14 +300,18 @@ def build_E(policies, action_cost=None):
     """
     Policy prior E(π): encodes habitual preferences over policies.
 
-    In standard AIF, E is NOT just uniform — it encodes the agent's
-    prior expectation of which policies it is likely to select.
-    A uniform E means "I have no habits."
-    A shaped E means "I prefer to not intervene unless necessary."
+    Policy prior E(π) encodes a prior over which policies are likely
+    before EFE evidence is accumulated. Here E is shaped by action
+    costs to create an *intervention bias*: NOOP is cheap, active
+    interventions carry increasing cost. This functions as a
+    regularizer that the EFE signal must overcome before the agent
+    commits to an intervention.
 
-    This is the AIF equivalent of "regularization" or "inertia":
-    the agent must accumulate enough evidence (via EFE) to overcome
-    its default preference for inaction.
+    NOTE (see L4 in module docstring): this is NOT canonical habit
+    learning — E is constructed once per episode from fixed costs and
+    is never updated from experience. A learned E would require
+    tracking policy posterior statistics across episodes and
+    incrementally updating the Dirichlet concentration over policies.
 
     E(π) ∝ exp(-Σ_τ cost(u_τ))
     """
@@ -366,6 +410,10 @@ class StandardAIFController(ControllerInterface):
         # For compatibility with episode runner belief logging
         self.belief = self.qs1.copy()
 
+        # Full joint posterior Q(s1,s2) — updated by _infer_states,
+        # used to initialise policy rollout without re-factorising.
+        self.Q_joint = np.outer(self.D1, self.D2)
+
         # Snapshots of beliefs at the moment an action was taken (for Module 7)
         self.prev_qs1 = None
         self.prev_qs2 = None
@@ -402,6 +450,7 @@ class StandardAIFController(ControllerInterface):
         """Reset beliefs and step counter at episode start."""
         self.qs1 = self.D1.copy()
         self.qs2 = self.D2.copy()
+        self.Q_joint = np.outer(self.D1, self.D2)
         self.belief = self.qs1.copy()
         self.step = 0
         self.prev_action = None
@@ -510,6 +559,11 @@ class StandardAIFController(ControllerInterface):
         self.qs1 = Q_joint.sum(axis=1)   # Σ_{s2} Q(s1, s2)
         self.qs2 = Q_joint.sum(axis=0)   # Σ_{s1} Q(s1, s2)
 
+        # Store full joint for policy rollout initialisation.
+        # Using the true posterior (not outer(qs1,qs2)) preserves
+        # cross-factor correlations induced by the joint observation.
+        self.Q_joint = Q_joint
+
         # Update belief for episode runner logging
         self.belief = self.qs1.copy()
 
@@ -523,94 +577,89 @@ class StandardAIFController(ControllerInterface):
 
         G(π) = Σ_{τ=0}^{T-1} G_τ(π)
 
-        where G_τ = pragmatic_τ + epistemic_τ:
+        where G_τ = pragmatic_τ - epistemic_τ:
 
         pragmatic_τ = -E_{Q(o|π)}[ln C(o)]
             → "Will future observations match my preferences?"
 
-        epistemic_τ = -E_{Q(o|π)}[DKL[Q(s|o,π) || Q(s|π)]]
-            → "Will this policy help me learn about hidden states?"
+        epistemic_τ = E_{Q(o1,o2|π)}[KL[Q(s1,s2|o1,o2,π) || Q(s1,s2|π)]]
+            → "Will this policy help me learn about the JOINT hidden state?"
+
+        Joint rollout:
+            Q_joint_next = B1u @ Q_joint @ B2u.T
+        Propagates the full joint distribution; preserves cross-factor
+        correlations rather than collapsing to factorised marginals.
+
+        Joint epistemic:
+            L[s1,s2] = P(o1|s1)·P(o2|s1,s2)  over all (o1,o2) pairs.
+        Covers cross-factor information that per-factor sums IG(o1;s1)
+        + IG(o2;s2) would miss.
 
         Returns: scalar G(π) (lower = better policy).
         """
         G_total = 0.0
 
-        # Start from current beliefs
-        qs1_pred = self.qs1.copy()
-        qs2_pred = self.qs2.copy()
+        # Start rollout from true joint posterior (stored by _infer_states).
+        # Avoids re-factorising to outer(qs1, qs2), which would discard
+        # cross-factor correlations induced by the joint observation.
+        Q_joint_pred = self.Q_joint.copy()   # (N_S1, N_S2)
 
         for tau in range(len(policy)):
             u = policy[tau]
 
-            # --- Predict future states given action ---
-            # Q(s1_{τ+1} | π) = B1[:,:,u].T @ Q(s1_τ|π)
-            #   = Σ_s P(s'|s,u) · Q(s)
-            qs1_next = self.B1[:, :, u] @ qs1_pred  # (N_S1,)
-            qs2_next = self.B2[:, :, u] @ qs2_pred  # (N_S2,)
-            qs1_next = self._normalize(qs1_next)
-            qs2_next = self._normalize(qs2_next)
+            # --- Joint state prediction ---
+            # Q(s1',s2') = Σ_{s1,s2} P(s1'|s1,u)·P(s2'|s2,u)·Q(s1,s2)
+            #            = B1u @ Q_joint @ B2u.T
+            B1u = self.B1[:, :, u]                        # (N_S1, N_S1)
+            B2u = self.B2[:, :, u]                        # (N_S2, N_S2)
+            Q_joint_next = B1u @ Q_joint_pred @ B2u.T     # (N_S1, N_S2)
+            total = Q_joint_next.sum()
+            Q_joint_next = (Q_joint_next / total if total > 1e-16
+                            else np.ones((N_S1, N_S2)) / (N_S1 * N_S2))
+
+            # Marginals (for pragmatic term and diagnostics)
+            qs1_next = Q_joint_next.sum(axis=1)            # (N_S1,)
 
             # --- Predict future observations ---
-            # Q(o1 | π) = A1.T @ Q(s1|π) = Σ_s1 P(o1|s1) · Q(s1)
-            qo1 = self.A1.T @ qs1_next             # (N_OBS,)
+            qo1 = self.A1.T @ qs1_next                    # (N_OBS,)
             qo1 = np.clip(qo1, 1e-16, None)
 
-            # Q(o2 | π) = Σ_{s1,s2} Q(s1) Q(s2) P(o2|s1,s2)
-            qo2 = np.zeros(N_OBS)
-            for s2 in range(N_S2):
-                for s1 in range(N_S1):
-                    qo2 += qs1_next[s1] * qs2_next[s2] * self.A2[s2, s1, :]
+            # Q(o2|π) = Σ_{s1,s2} Q_joint[s1,s2]·P(o2|s1,s2)
+            # A2 shape (N_S2,N_S1,N_OBS); Q_joint_next.T shape (N_S2,N_S1)
+            qo2 = (self.A2 * Q_joint_next.T[:, :, np.newaxis]).sum(axis=(0, 1))
             qo2 = np.clip(qo2, 1e-16, None)
 
-            # --- Pragmatic value (实用价值 / instrumental value) ---
-            # "Do predicted observations match my preferences?"
-            # = -Σ_o Q(o|π) · ln C(o)  (cross-entropy with preferences)
+            # --- Pragmatic value ---
             pragmatic = -np.dot(qo1, self.C1) - np.dot(qo2, self.C2)
 
-            # --- Epistemic value (认知价值 / information gain) ---
-            # "Does this policy reduce my uncertainty about hidden states?"
-            # Full epistemic term covers both observation modalities:
-            #   E_{Q(o1)}[KL[Q(s1|o1,π) || Q(s1|π)]]   (o1 → s1)
-            # + E_{Q(o2)}[KL[Q(s2|o2,π) || Q(s2|π)]]   (o2 → s2)
+            # --- Fully joint epistemic value ---
+            # E_{Q(o1,o2)}[KL[Q(s1,s2|o1,o2,π) || Q(s1,s2|π)]]
+            # L[s1,s2] = P(o1|s1)·P(o2|s1,s2)  — joint observation likelihood
+            # Q_post = Q_joint_next * L  (unnormalised posterior)
+            # p_obs  = sum(Q_post)       = P(o1,o2|π)
             epistemic = 0.0
-
-            # Modality 1: o1 informs s1 (load state)
             for o1_val in range(N_OBS):
-                if qo1[o1_val] < 1e-16:
-                    continue
-                # Q(s1 | o1, π) ∝ P(o1|s1) · Q(s1|π)
-                qs1_given_o = self.A1[:, o1_val] * qs1_next
-                total = qs1_given_o.sum()
-                if total < 1e-16:
-                    continue
-                qs1_given_o /= total
-                kl1 = self._kl_divergence(qs1_given_o, qs1_next)
-                epistemic += qo1[o1_val] * kl1
+                A1_col = self.A1[:, o1_val]               # (N_S1,)
+                for o2_val in range(N_OBS):
+                    # A2[:,:,o2].T[s1,s2] = P(o2|s_load=s1, s_off=s2)
+                    A2_slice = self.A2[:, :, o2_val].T    # (N_S1, N_S2)
+                    L = A1_col[:, np.newaxis] * A2_slice  # (N_S1, N_S2)
 
-            # Modality 2: o2 informs s2 (offload state)
-            # Q(s2 | o2, π) ∝ [Σ_{s1} Q(s1|π) · P(o2|s1,s2)] · Q(s2|π)
-            # A2[:, :, o2_val] has shape (N_S2, N_S1);
-            # marginalised_lik[s2] = Σ_s1 Q(s1|π) · A2[s2, s1, o2_val]
-            for o2_val in range(N_OBS):
-                if qo2[o2_val] < 1e-16:
-                    continue
-                marg_lik = self.A2[:, :, o2_val] @ qs1_next  # (N_S2,)
-                qs2_given_o = marg_lik * qs2_next
-                total = qs2_given_o.sum()
-                if total < 1e-16:
-                    continue
-                qs2_given_o /= total
-                kl2 = self._kl_divergence(qs2_given_o, qs2_next)
-                epistemic += qo2[o2_val] * kl2
+                    Q_post = Q_joint_next * L
+                    p_obs = Q_post.sum()
+                    if p_obs < 1e-16:
+                        continue
+                    Q_post /= p_obs
 
-            # --- Accumulate G_τ ---
-            G_tau = pragmatic - epistemic  # NOTE: epistemic is SUBTRACTED
-                                           # (information-seeking reduces G)
-            G_total += G_tau
+                    kl = np.sum(Q_post * np.log(
+                        np.clip(Q_post, 1e-16, None) /
+                        np.clip(Q_joint_next, 1e-16, None)
+                    ))
+                    epistemic += p_obs * kl
 
-            # Advance predicted beliefs for next step
-            qs1_pred = qs1_next
-            qs2_pred = qs2_next
+            # epistemic subtracted: information-seeking reduces G
+            G_total += pragmatic - epistemic
+            Q_joint_pred = Q_joint_next
 
         return G_total
 
