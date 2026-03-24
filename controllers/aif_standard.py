@@ -288,7 +288,6 @@ def build_E(policies, action_cost=None):
     E = np.exp(log_E)
     E /= E.sum()
     return E
-    return D1, D2
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -367,6 +366,10 @@ class StandardAIFController(ControllerInterface):
         # For compatibility with episode runner belief logging
         self.belief = self.qs1.copy()
 
+        # Snapshots of beliefs at the moment an action was taken (for Module 7)
+        self.prev_qs1 = None
+        self.prev_qs2 = None
+
         # ── Load configs ──────────────────────────────────────────
         self._load_configs()
 
@@ -403,6 +406,8 @@ class StandardAIFController(ControllerInterface):
         self.step = 0
         self.prev_action = None
         self.prev_obs = None
+        self.prev_qs1 = None
+        self.prev_qs2 = None
 
         # Build policies for this episode
         self._policies = construct_policies(self.T)
@@ -467,34 +472,43 @@ class StandardAIFController(ControllerInterface):
 
     def _infer_states(self, o1, o2):
         """
-        Bayesian model inversion: update beliefs given observations.
+        Bayesian model inversion via exact joint posterior.
 
-        This is NOT just reading sensors — it's asking:
-        "Given what I observed, what is the world probably like?"
+        Rather than sequential per-factor updates (which are an inconsistent
+        approximation), we form the joint posterior Q(s1, s2) in one pass:
 
-        Q(s1) ∝ P(o1 | s1) · Q(s1)_prior
-        Q(s2) ∝ [Σ_{s1} Q(s1) · P(o2 | s1, s2)] · Q(s2)_prior
+            Q(s1, s2) ∝ Q_prior(s1) · Q_prior(s2)
+                        · P(o1 | s1)
+                        · P(o2 | s1, s2)
+
+        The prior factorizes as the product of current marginals (mean-field
+        initialization). Because both observations are available simultaneously,
+        no iteration is needed — the joint update is exact given this prior.
+        Marginals qs1, qs2 are then derived by summing over the other factor.
+
+        A2[s2, s1, o2] = P(o2 | s_offload=s2, s_load=s1), shape (N_S2, N_S1, N_OBS).
+        L2_mat[s1, s2] = A2[s2, s1, o2] after transpose → shape (N_S1, N_S2).
         """
-        # --- Factor 1: Load state inference ---
-        likelihood_1 = self.A1[:, o1]             # P(o1 | s1) for each s1
-        self.qs1 = likelihood_1 * self.qs1        # posterior ∝ likelihood × prior
-        self.qs1 = self._normalize(self.qs1)
+        # Joint prior from current factorized beliefs: (N_S1, N_S2)
+        Q_joint = np.outer(self.qs1, self.qs2)
 
-        # --- Factor 2: Offload state inference ---
-        # Marginalize over s1 to get P(o2 | s2)
-        likelihood_2 = np.zeros(N_S2)
-        for s2 in range(N_S2):
-            # P(o2 | s2) = Σ_{s1} Q(s1) · P(o2 | s1, s2)
-            likelihood_2[s2] = np.dot(self.qs1, self.A2[s2, :, o2])
-        self.qs2 = likelihood_2 * self.qs2
-        self.qs2 = self._normalize(self.qs2)
+        # Likelihoods
+        L1 = self.A1[:, o1]              # P(o1 | s1),       shape (N_S1,)
+        L2_mat = self.A2[:, :, o2].T     # P(o2 | s1, s2),   shape (N_S1, N_S2)
 
-        # Cross-validate: update s1 again using system observation
-        cross_likelihood = np.zeros(N_S1)
-        for s1 in range(N_S1):
-            cross_likelihood[s1] = np.dot(self.qs2, self.A2[:, s1, o2])
-        self.qs1 = cross_likelihood * self.qs1
-        self.qs1 = self._normalize(self.qs1)
+        # Joint update: Q_joint[s1, s2] ∝ prior · L1[s1] · L2[s1, s2]
+        Q_joint *= L1[:, np.newaxis]
+        Q_joint *= L2_mat
+
+        total = Q_joint.sum()
+        if total < 1e-16:
+            Q_joint = np.ones((N_S1, N_S2)) / (N_S1 * N_S2)
+        else:
+            Q_joint /= total
+
+        # Marginals
+        self.qs1 = Q_joint.sum(axis=1)   # Σ_{s2} Q(s1, s2)
+        self.qs2 = Q_joint.sum(axis=0)   # Σ_{s1} Q(s1, s2)
 
         # Update belief for episode runner logging
         self.belief = self.qs1.copy()
@@ -555,22 +569,39 @@ class StandardAIFController(ControllerInterface):
 
             # --- Epistemic value (认知价值 / information gain) ---
             # "Does this policy reduce my uncertainty about hidden states?"
-            # = E_Q(o)[DKL[Q(s|o,π) || Q(s|π)]]
+            # Full epistemic term covers both observation modalities:
+            #   E_{Q(o1)}[KL[Q(s1|o1,π) || Q(s1|π)]]   (o1 → s1)
+            # + E_{Q(o2)}[KL[Q(s2|o2,π) || Q(s2|π)]]   (o2 → s2)
             epistemic = 0.0
-            for o1 in range(N_OBS):
-                if qo1[o1] < 1e-16:
+
+            # Modality 1: o1 informs s1 (load state)
+            for o1_val in range(N_OBS):
+                if qo1[o1_val] < 1e-16:
                     continue
-                # Posterior if we were to observe o1:
                 # Q(s1 | o1, π) ∝ P(o1|s1) · Q(s1|π)
-                qs1_given_o = self.A1[:, o1] * qs1_next
+                qs1_given_o = self.A1[:, o1_val] * qs1_next
                 total = qs1_given_o.sum()
                 if total < 1e-16:
                     continue
                 qs1_given_o /= total
+                kl1 = self._kl_divergence(qs1_given_o, qs1_next)
+                epistemic += qo1[o1_val] * kl1
 
-                # KL[Q(s|o,π) || Q(s|π)]
-                kl = self._kl_divergence(qs1_given_o, qs1_next)
-                epistemic += qo1[o1] * kl
+            # Modality 2: o2 informs s2 (offload state)
+            # Q(s2 | o2, π) ∝ [Σ_{s1} Q(s1|π) · P(o2|s1,s2)] · Q(s2|π)
+            # A2[:, :, o2_val] has shape (N_S2, N_S1);
+            # marginalised_lik[s2] = Σ_s1 Q(s1|π) · A2[s2, s1, o2_val]
+            for o2_val in range(N_OBS):
+                if qo2[o2_val] < 1e-16:
+                    continue
+                marg_lik = self.A2[:, :, o2_val] @ qs1_next  # (N_S2,)
+                qs2_given_o = marg_lik * qs2_next
+                total = qs2_given_o.sum()
+                if total < 1e-16:
+                    continue
+                qs2_given_o /= total
+                kl2 = self._kl_divergence(qs2_given_o, qs2_next)
+                epistemic += qo2[o2_val] * kl2
 
             # --- Accumulate G_τ ---
             G_tau = pragmatic - epistemic  # NOTE: epistemic is SUBTRACTED
@@ -588,15 +619,16 @@ class StandardAIFController(ControllerInterface):
     #           (策略后验与动作执行)
     # ===============================================================
 
-    def _select_action(self, obs, stream_manager):
+    def _select_action(self):
         """
-        Form policy posterior, marginalize to action, execute.
+        Form policy posterior, marginalize to abstract action.
 
         Q(π) ∝ E(π) · exp(-γ · G(π))
         P(u_0) = Σ_{π: π[0]=u_0} Q(π)
 
         The action is a BYPRODUCT of policy inference —
         not a direct optimization over single actions.
+        Concrete grounding (which stream?) happens separately in _ground_action.
         """
         policies = self._policies
         n_policies = len(policies)
@@ -668,6 +700,11 @@ class StandardAIFController(ControllerInterface):
             self.A2[s2] = self._a2_counts[s2] / np.clip(row_sums, 1e-16, None)
 
         # --- Update B1 (transition model for load) ---
+        # NOTE: soft assignment uses prev_qs1 (belief at action time) × qs1
+        # (belief after transition). This approximates the true sufficient
+        # statistic but conflates belief drift with genuine state change.
+        # Acceptable for online prototype; a cleaner approach would use the
+        # B-predicted prior Q(s'|π) as the target rather than the posterior.
         if u_prev is not None and self.prev_qs1 is not None:
             for s_prev in range(N_S1):
                 for s_next in range(N_S1):
@@ -680,6 +717,19 @@ class StandardAIFController(ControllerInterface):
                 self.B1[:, :, u] = self._b1_counts[:, :, u] / np.clip(
                     col_sums, 1e-16, None)
 
+        # --- Update B2 (transition model for offload state) ---
+        if u_prev is not None and self.prev_qs2 is not None:
+            for s_prev in range(N_S2):
+                for s_next in range(N_S2):
+                    weight = self.prev_qs2[s_prev] * self.qs2[s_next]
+                    self._b2_counts[s_next, s_prev, u_prev] += (
+                        self.lr_B * weight)
+            # Re-derive B2
+            for u in range(N_ACTIONS):
+                col_sums = self._b2_counts[:, :, u].sum(axis=0, keepdims=True)
+                self.B2[:, :, u] = self._b2_counts[:, :, u] / np.clip(
+                    col_sums, 1e-16, None)
+
     # ===============================================================
     # Action Grounding: Abstract → Concrete (抽象动作 → 具体执行)
     # ===============================================================
@@ -688,11 +738,24 @@ class StandardAIFController(ControllerInterface):
         """
         Map abstract control state u to concrete (stream_id, new_mode).
 
-        This is the bridge between AIF's "strategic reasoning" (which
-        type of intervention?) and the physical system (which stream?).
+        KNOWN LIMITATION — semantic gap between AIF policy and execution:
+        The AIF generative model reasons over abstract action types
+        (DEMOTE, OFFLOAD, …) and their expected effects on load/offload
+        states. But the physical system needs a specific (stream_id, mode).
+        This grounding step is a heuristic ("pick worst/best/heaviest
+        stream") that is NOT part of the AIF inference — it lives outside
+        the generative model.
 
-        Selection heuristic: pick the stream where the action has
-        the largest expected impact.
+        Consequence: the policy EFE G(π) is evaluated against abstract
+        action semantics, but the actual state change depends on which
+        stream is selected here. If the heuristic systematically deviates
+        from the assumed action effects in B1/B2, the generative model's
+        predictions will be biased, and Module 7 learning will absorb
+        that bias into the transition counts.
+
+        A proper fix requires expanding the state/action space to include
+        per-stream identity, or learning a stream-selection policy jointly
+        with the AIF inference.
         """
         per_stream = obs.get("per_stream", {})
         if not per_stream:
@@ -841,7 +904,7 @@ class StandardAIFController(ControllerInterface):
             self._policies = construct_policies(self.T)
             self._E = build_E(self._policies)
 
-        u_abstract = self._select_action(observation, stream_manager)
+        u_abstract = self._select_action()
 
         # ── Action Grounding ──────────────────────────────────────
         concrete_action = self._ground_action(
