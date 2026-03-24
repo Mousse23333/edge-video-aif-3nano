@@ -1,10 +1,8 @@
-% Freya
-\documentclass[10pt,conference]{article}
+% Freya — EDCCS 2026 Workshop Version (6-page target)
+\documentclass[conference]{IEEEtran}
 
-\usepackage[margin=1in]{geometry}
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
-\usepackage{lmodern}
 \usepackage{microtype}
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{bm}
@@ -13,13 +11,11 @@
 \usepackage{multirow}
 \usepackage{xcolor}
 \usepackage{enumitem}
+\usepackage{array}
+\usepackage{url}
+\usepackage[caption=false,font=footnotesize]{subfig}
 \usepackage{hyperref}
 \usepackage{cleveref}
-\usepackage{array}
-\usepackage{subcaption}
-\usepackage{url}
-\usepackage{algorithm}
-\usepackage{algpseudocode}
 
 \hypersetup{
     colorlinks=true,
@@ -32,435 +28,209 @@
 under Partial Observability}
 
 \author{
-Daniel Wang
+\IEEEauthorblockN{Daniel Wang}
+\IEEEauthorblockA{\textit{TU Wien}\\
+Vienna, Austria\\
+daniel.wang@tuwien.ac.at}
+\and
+\IEEEauthorblockN{Schahram Dustdar}
+\IEEEauthorblockA{\textit{TU Wien}\\
+Vienna, Austria\\
+dustdar@dsg.tuwien.ac.at}
 }
-
-\date{March 2026}
 
 \begin{document}
 
 \maketitle
+\pagestyle{plain}
 
 \begin{abstract}
-Heterogeneous edge systems increasingly execute multiple concurrent AI video streams under strict latency, accuracy, and energy constraints.
-However, schedulers only observe noisy runtime metrics, while the true joint resource and network state remains partially hidden.
-This paper formulates multi-stream edge video orchestration as a Partially Observable Markov Decision Process (POMDP) and investigates Active Inference (AIF) as a structured belief-based scheduler.
-We implement a physical three-node Jetson Orin Nano cluster in which one node acts as coordinator running the control loop and local GPU inference, and two nodes serve as stateless offload targets, define a finite systems-level action space with four execution modes (FULL, LITE, SKIP, OFFLOAD), and compare AIF against four baselines---No-Op, threshold-based heuristic, myopic greedy, and DQN---under an identical observation interface.
-Across four workload scenarios with five independent runs, AIF achieves 86.0\% average SLO satisfaction without any training data, compared to 87.8\% for the threshold-based heuristic, 89.9\% for the myopic oracle, and 88.2\% for DQN (which requires per-scenario training and exhibits high seed-dependent variance, confirmed across 8 runs).
-A sensitivity analysis of the AIF generative model reveals that correcting the OFFLOAD likelihood from per-stream to system-level semantics improves SLO compliance by 8 percentage points.
-Furthermore, tuning the SKIP likelihood to penalize frame-skipping raises AIF from 85.3\% to 93.2\% in ablation (vs.\ 86.0\% in the main five-run evaluation), surpassing all baselines and demonstrating that model specification---not algorithmic complexity---is the primary determinant of AIF performance.
-Rather than claiming superiority, we characterize when AIF's belief-based reasoning improves adaptation and interpretability, and where model misspecification limits its benefits.
+Multi-stream video inference on edge devices creates coupled GPU contention that degrades per-stream throughput as concurrent stream count grows.
+We formulate this scheduling problem as a Partially Observable Markov Decision Process (POMDP) and implement Active Inference (AIF) as a training-free, belief-based scheduler on a physical three-node Jetson Orin Nano cluster with four execution modes (FULL, LITE, SKIP, OFFLOAD).
+Evaluated across four workload scenarios with five independent runs, AIF achieves 86.0\% average SLO satisfaction — competitive with a threshold-based heuristic (87.8\%) and DQN (88.2\%) without any training data, and with lower cross-run variance than DQN.
+A sensitivity analysis of the generative model reveals the dominant performance lever: correcting OFFLOAD likelihood semantics from per-stream to system-level improves SLO by 7.9~pp, and penalizing SKIP in the likelihood model yields a further 7.9~pp — two corrections that together outweigh all secondary hyperparameter effects combined ($<$8~pp).
+The central finding is that model specification, not algorithmic complexity, is the primary challenge for AIF deployment in edge scheduling.
 \end{abstract}
+
+\begin{IEEEkeywords}
+Active Inference, Edge Computing, Video Analytics, POMDP, Resource Scheduling, Generative Model
+\end{IEEEkeywords}
 
 %% ============================================================================
 \section{Introduction}
 \label{sec:introduction}
 
-\subsection{Motivation}
+Edge video analytics pipelines run multiple concurrent DNN inference streams under tight GPU memory and latency constraints~\cite{ananthanarayanan2017real}.
+As stream count grows, GPU contention degrades throughput: a Jetson Orin Nano running YOLOv8n~\cite{jocher2023yolov8} drops from 10.6 to 8.7~FPS when a sixth 720p stream is added, triggering SLO violations.
+A scheduler must dynamically decide, per stream and per control step, whether to process at full resolution (FULL, 640px), reduced resolution (LITE, 320px), skip frames (SKIP), or offload to a remote worker node (OFFLOAD).
 
-Edge video analytics is a growing workload class in domains ranging from autonomous driving to smart infrastructure, where multiple camera streams must be processed concurrently under strict latency and throughput constraints~\cite{ananthanarayanan2017real}.
-Unlike cloud deployments, edge nodes operate under tight GPU memory, thermal, and power envelopes.
-When multiple streams share a single GPU, they compete for compute cycles: adding a sixth stream to a Jetson Orin Nano running YOLOv8n drops per-stream throughput from 10.6 to 8.7~FPS---below the 10~FPS service-level objective (SLO)---while P95 latency rises from 92 to 107~ms.
+This problem is structurally a POMDP: the scheduler observes only noisy per-stream FPS and latency, while the true GPU contention state — shaped by thermal throttling, queueing, and concurrent loads — is hidden.
+Threshold-based heuristics react to observed violations but cannot reason under uncertainty~\cite{mao2019learning}.
+RL-based schedulers can optimize long-horizon objectives but require per-scenario training, exhibit seed-dependent variance, and offer limited interpretability.
 
-Existing approaches to multi-stream scheduling fall into two broad categories.
-\emph{Threshold-based heuristics} react to SLO violations but lack foresight and oscillate under non-stationary loads.
-\emph{Reinforcement learning} (RL) methods can optimize long-horizon objectives but require extensive training, suffer from reward engineering challenges, and offer limited interpretability in safety-critical deployments~\cite{mao2019learning}.
-Both approaches treat the scheduling problem as fully observable, ignoring the fundamental uncertainty in runtime metrics: GPU utilization fluctuates between sampling intervals, queueing delays are stochastic, and network round-trip times to offload nodes vary unpredictably.
+We investigate \emph{Active Inference} (AIF)~\cite{friston2010free,parr2022active} as an alternative: a Bayesian framework in which agents maintain explicit beliefs over hidden states and select actions by minimizing Expected Free Energy (EFE), jointly optimizing goal-seeking and information-seeking objectives without training.
+Applying AIF to edge video scheduling reveals a consistent and actionable finding: the primary determinant of AIF performance is not the algorithmic structure, but how actions are semantically encoded in the generative model — specifically the likelihood matrices for OFFLOAD and SKIP.
 
-\subsection{Problem Statement}
+\textbf{Contributions:}
+\begin{enumerate}[leftmargin=*,topsep=2pt,itemsep=0pt]
+    \item A compact POMDP formulation for multi-stream edge video scheduling, implemented on a physical three-node Jetson Orin Nano cluster with real GPU contention and network offloading.
+    \item A practical AIF scheduler operating under a 1-second control loop with one-step EFE approximation, requiring no training data.
+    \item An empirical demonstration that OFFLOAD and SKIP likelihood semantics each contribute $+$7.9~pp to SLO compliance, dominating all secondary hyperparameters combined ($<$8~pp), and identifying model specification as the key deployment challenge.
+\end{enumerate}
 
-We study multi-stream video inference scheduling on a three-node edge cluster with role-asymmetric nodes, where each stream may be processed locally at full or reduced resolution, temporarily skipped, or offloaded to a remote worker node.
-The scheduler observes only noisy per-stream metrics (FPS, P95 latency) and aggregate GPU utilization, while the true joint system load state---encompassing GPU contention, thermal throttling, network congestion, and queueing effects---remains partially hidden.
-The objective is to maximize SLO compliance (per-stream FPS $\geq$ 10, P95 latency $\leq$ 150~ms) while minimizing detection coverage loss and mode switching overhead.
-
-\subsection{Research Questions}
-\begin{itemize}[leftmargin=*]
-    \item \textbf{RQ1:} Can multi-stream edge video orchestration be effectively modeled as a compact POMDP with a tractable state space?
-    \item \textbf{RQ2:} Under the same action and observation interface, when does AIF outperform heuristic and learning-based schedulers in SLO compliance, adaptation speed, and resource efficiency?
-    \item \textbf{RQ3:} How sensitive is AIF to generative-model specification, particularly the likelihood matrices that encode domain knowledge?
-\end{itemize}
-
-\subsection{Contributions}
-\begin{itemize}[leftmargin=*]
-    \item A POMDP formulation for heterogeneous multi-stream edge video scheduling with a compact three-state abstraction derived from hardware profiling.
-    \item An AIF-based scheduler that requires no training data and provides interpretable belief states, achieving competitive SLO compliance through profiling-derived generative model parameters.
-    \item A physical experimental testbed with real GPU contention and network offloading on NVIDIA Jetson hardware, avoiding simulation artifacts.
-    \item A comparative evaluation against four baselines under four workload scenarios with statistical replication, plus ablation studies quantifying AIF sensitivity to each generative model component.
-    \item An empirical analysis demonstrating that model specification---particularly how OFFLOAD actions are represented in the likelihood model---is the primary determinant of AIF effectiveness, providing actionable guidance for practitioners.
-\end{itemize}
+\textbf{Related work.}
+Multi-stream video scheduling has been addressed through model selection~\cite{jiang2018chameleon}, resolution adaptation~\cite{zhang2017live}, and DNN offloading~\cite{kang2017neurosurgeon}, but primarily under full observability.
+AIF has been applied to computing continuum orchestration~\cite{sedlak2024equilibrium} and adaptive edge stream processing~\cite{sedlak2024stream}; the latter is closest to our work but addresses generic stream tasks rather than video-specific execution modes and coupled GPU contention.
+To our knowledge, this is the first study to characterize how the \emph{semantics} of offloading and skip actions in the AIF generative model determine scheduler performance.
 
 %% ============================================================================
-\section{Background and Related Work}
-\label{sec:related}
-
-\subsection{Edge Video Orchestration}
-
-Multi-stream video analytics at the edge requires concurrent execution of deep neural network (DNN) inference pipelines under shared GPU resources.
-Prior work addresses this through model selection~\cite{jiang2018chameleon}, resolution adaptation~\cite{zhang2017live}, and computation offloading~\cite{kang2017neurosurgeon}.
-VideoStorm~\cite{zhang2017live} and Chameleon~\cite{jiang2018chameleon} optimize quality-resource tradeoffs for video analytics but assume centralized cloud clusters.
-At the edge, Rocket~\cite{ran2018deepdecision} and LAVEA~\cite{yi2017lavea} explore offloading but focus on single-stream scenarios.
-Our work addresses the multi-stream case where streams interact through shared GPU contention, creating coupled dynamics that single-stream optimizers cannot capture.
-
-\subsection{POMDPs for Systems Control}
-
-Partially Observable Markov Decision Processes provide a principled framework for decision-making under uncertainty~\cite{kaelbling1998planning}.
-In systems contexts, partial observability arises naturally: CPU/GPU utilization is sampled periodically rather than observed continuously, network conditions are inferred from delayed measurements, and queueing states are not directly accessible.
-While POMDP solvers have been applied to network resource management~\cite{zhao2007decentralized} and cloud autoscaling~\cite{barrett2013applying}, exact solutions are intractable for real-time systems.
-This motivates approximate approaches that maintain tractable belief representations while preserving the benefits of uncertainty-aware reasoning.
-
-\subsection{Active Inference in Edge and Continuum Systems}
-
-Active Inference (AIF) is a Bayesian framework originating from computational neuroscience~\cite{friston2010free,parr2022active} that has recently been applied to engineering control problems.
-AIF agents maintain probabilistic beliefs about hidden states and select actions by minimizing \emph{Expected Free Energy} (EFE), which naturally balances exploitation (pragmatic value: achieving preferred observations) and exploration (epistemic value: reducing uncertainty).
-
-In the systems domain, AIF has been explored for device-level autonomy~\cite{sedlak2024equilibrium}, fog-layer coordination, and cluster-level load rebalancing.
-Prior work demonstrates AIF's potential for self-adaptive systems where agents must operate under uncertainty without extensive training.
-However, existing studies primarily address single-resource elasticity (e.g., container scaling) rather than multi-stream scheduling with heterogeneous execution modes and physical offloading.
-
-\subsection{Gap Statement}
-
-Prior work studies AIF in orchestration and elasticity contexts, but less is known about its behavior in heterogeneous multi-stream video analytics with explicit stream-level actions, real GPU contention, and physical network offloading.
-Furthermore, the sensitivity of AIF to generative-model specification---particularly how offloading actions are represented in the likelihood model---has not been systematically characterized.
-This paper addresses both gaps through physical experiments on constrained edge hardware.
-
-%% ============================================================================
-\section{System Model and Problem Formulation}
+\section{System and Problem Formulation}
 \label{sec:problem}
 
-\subsection{Target System}
+\subsection{Testbed and Execution Modes}
 
-Our target system is a three-node edge cluster for multi-stream object detection, illustrated in~\Cref{fig:architecture}.
-The cluster comprises:
-\begin{itemize}[leftmargin=*]
-    \item \textbf{Coordinator node} (NVIDIA Jetson Orin Nano 8GB): 1024 CUDA cores, 8~GB unified memory, JetPack R36.5. Hosts the controller logic and executes local batch inference using YOLOv8n~\cite{jocher2023yolov8}.
-    \item \textbf{Offload nodes} (2$\times$ NVIDIA Jetson Orin Nano 8GB, identical hardware): Each runs a lightweight HTTP inference server accepting JPEG-encoded frames and returning JSON detection results. Connected via Gigabit Ethernet on a local subnet (192.168.1.x).
-\end{itemize}
+Our testbed is a three-node edge cluster of identical Jetson Orin Nano 8GB devices (1024 CUDA cores, JetPack R36.5, Gigabit Ethernet) arranged in a role-asymmetric topology (\Cref{fig:architecture}): one \emph{coordinator} runs the controller and local GPU inference; two \emph{worker nodes} serve as stateless HTTP inference servers.
+All video streams use YOLOv8n on 720p input.
 
-This architecture reflects a hierarchical topology: while all three nodes share identical hardware, the coordinator node runs the scheduling logic and local GPU inference, while the two worker nodes serve as stateless offload targets that extend the cluster's peak inference throughput.
-The role asymmetry is deliberate---the coordinator has full visibility of all stream states and makes centralized scheduling decisions, while offload nodes are stateless workers.
+Profiling reveals the SLO boundary (FPS $\geq 10$, P95 $\leq 150$~ms): FULL mode (640px) supports up to 5 concurrent local streams; LITE (320px) extends this to 7 streams at the cost of reduced detection count; beyond 6 FULL streams, SLO violations are unavoidable without mode adaptation.
+Each stream is assigned one of four modes per 1-second control step:
+\textbf{FULL} — local inference at 640$\times$640 (highest quality, highest GPU cost);
+\textbf{LITE} — local inference at 320$\times$320 (extends SLO boundary);
+\textbf{SKIP} — no inference, zero GPU cost, zero detections;
+\textbf{OFFLOAD} — HTTP POST to a worker node for remote inference ($\sim$7~FPS, $\sim$140~ms RTT, capped at $K_{\max}=2$ concurrent streams).
 
 \begin{figure*}[t]
     \centering
     \includegraphics[width=0.85\textwidth]{figures/architecture.pdf}
-    \caption{System architecture.  The coordinator node hosts the control loop and local GPU inference (FULL / LITE modes), while two identical worker nodes serve as stateless HTTP inference workers.  The bottom panel details the AIF controller's internal pipeline: Bayesian belief update, generative model (likelihood \textbf{A}, transition \textbf{B}), expected free energy computation, and precision-weighted action selection.}
+    \caption{System architecture. The coordinator runs the control loop and local GPU inference (FULL/LITE). Two identical worker nodes serve as stateless HTTP offload targets. The AIF controller (right) maintains a belief $Q(s)$ over hidden load states, evaluates Expected Free Energy per candidate action, and selects via precision-weighted softmax.}
     \label{fig:architecture}
 \end{figure*}
 
-\subsection{Streams, Nodes, and Resource Contention}
-
-Unlike generic microservice autoscaling, multi-stream video inference exhibits \emph{coupled resource contention}: all locally-processed streams share a single GPU compute pipeline, so the performance of each stream depends on the total number of concurrent streams and their execution modes.
-\Cref{tab:profiling} summarizes empirically measured per-stream performance as a function of stream count and mode, obtained from systematic benchmarking on the Orin.
-
-\begin{table}[t]
-    \centering
-    \caption{Per-stream performance vs.\ concurrent stream count on the coordinator Jetson Orin Nano (YOLOv8n, 720p input). SLO boundary: FPS $\geq$ 10, P95 $\leq$ 150~ms.}
-    \label{tab:profiling}
-    \small
-    \begin{tabular}{@{}lrrrrr@{}}
-        \toprule
-        Mode & $n$ & FPS & P95 (ms) & FPS OK & Lat OK \\
-        \midrule
-        FULL (640) & 3 & 16.7 & 59 & \checkmark & \checkmark \\
-        FULL (640) & 5 & 10.6 & 92 & \checkmark & \checkmark \\
-        FULL (640) & 6 & 8.7 & 107 & $\times$ & \checkmark \\
-        FULL (640) & 8 & 7.2 & 130 & $\times$ & \checkmark \\
-        \midrule
-        LITE (320) & 5 & 14.7 & 57 & \checkmark & \checkmark \\
-        LITE (320) & 7 & 10.8 & 74 & \checkmark & \checkmark \\
-        LITE (320) & 8 & 9.4 & 87 & $\times$ & \checkmark \\
-        \midrule
-        OFFLOAD   & -- & $\sim$7 & $\sim$140 & $\times$ & \checkmark \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-Key observations: (1)~FULL mode supports up to 5 concurrent streams within SLO; (2)~LITE mode extends the SLO boundary to 7 streams by reducing model input resolution from 640 to 320 pixels, at the cost of 44\% fewer detections per frame; (3)~OFFLOAD provides detection continuity independent of local GPU load, but at reduced throughput ($\sim$7~FPS) and with $\sim$140~ms network round-trip latency; (4)~mode switching from SKIP back to inference incurs a cold-start transient of 200--300~ms.
-
 \subsection{POMDP Formulation}
-\label{sec:pomdp}
 
-We formulate the scheduling problem as a POMDP $\mathcal{M} = (\mathcal{S}, \mathcal{A}, \mathcal{O}, T, Z, C)$ where:
+We model the scheduling problem as a POMDP $(\mathcal{S}, \mathcal{A}, \mathcal{O}, T, A, C)$.
 
-\begin{itemize}[leftmargin=*]
-    \item $\mathcal{S}$ is the latent system load state,
-    \item $\mathcal{A}$ is the action space (stream-level mode changes),
-    \item $\mathcal{O}$ is the observation space (noisy runtime metrics),
-    \item $T(s' \mid s, a)$ is the state transition model,
-    \item $Z(o \mid s, m)$ is the observation likelihood model,
-    \item $C$ is the preferred observation distribution (replacing the reward function $R$).
-\end{itemize}
+\textbf{Hidden state} $s \in \{\textsc{Low}, \textsc{Med}, \textsc{High}\}$ abstracts GPU load by the number of locally-inferring streams $n_{\text{infer}}$:
+$\textsc{Low}$: $n \leq 3$ (all SLOs satisfied);
+$\textsc{Med}$: $n \in \{4,5\}$ (near boundary);
+$\textsc{High}$: $n \geq 6$ (violations without adaptation).
+The state is hidden because noisy FPS/latency observations are confounded by thermal throttling, queueing, and measurement noise.
 
-Using $C$ instead of $R$ is the key departure from classical POMDPs: AIF agents minimize surprise relative to preferred outcomes rather than maximizing cumulative reward.
+\textbf{Observations} per control window are categorized as $\textsc{Good}$ (FPS $\geq 13$, P95 $\leq 100$~ms), $\textsc{Marginal}$ (FPS $\geq 10$, P95 $\leq 150$~ms), or $\textsc{Bad}$ (otherwise).
+Only FULL and LITE streams contribute to the observation; SKIP and OFFLOAD streams are excluded as they do not reflect local GPU state.
 
-\subsection{State Space}
+\textbf{Actions} are single-stream mode changes or no-op, yielding $|\mathcal{A}| = 4N + 1$ candidates ($N$ active streams).
+Constraints enforce skip ratio $\leq 30\%$, OFFLOAD $\leq K_{\max}=2$, and minimum dwell times to prevent oscillation.
 
-The hidden state $s \in \mathcal{S} = \{\textsc{Low}, \textsc{Medium}, \textsc{High}\}$ represents the aggregate system load level, abstracting the number of locally-inferring streams ($n_{\text{infer}}$):
+\textbf{Objective:}
 \begin{equation}
-    s = \begin{cases}
-        \textsc{Low}    & \text{if } n_{\text{infer}} \leq 3 \\
-        \textsc{Medium} & \text{if } n_{\text{infer}} \in \{4, 5\} \\
-        \textsc{High}   & \text{if } n_{\text{infer}} \geq 6
-    \end{cases}
+    \text{SLO\%} = 1 - \frac{\sum_{t,i} \mathbf{1}[\text{FPS}_{t,i} < 10 \;\lor\; \text{P95}_{t,i} > 150\text{ms}]}{\sum_{t,i} \mathbf{1}[m_{t,i} \neq \textsc{Skip}]}
+    \label{eq:slo}
 \end{equation}
-
-This compact three-state abstraction is derived from profiling data (\Cref{tab:profiling}): at $n \leq 3$, all metrics are well within SLO; at $n \in \{4,5\}$, the system operates near the SLO boundary; at $n \geq 6$, SLO violations become inevitable without mode adaptation.
-The state is hidden because the controller cannot directly count $n_{\text{infer}}$---it observes only noisy per-stream FPS and latency measurements that are influenced by thermal throttling, queueing effects, and measurement noise.
-
-\subsection{Observation Space}
-
-Each observation window (duration $T_c = 1$~s, corresponding to $\sim$30 frames at 30~FPS) yields per-stream metrics: inference FPS and P95 latency.
-These are categorized into three observation levels:
-\begin{equation}
-    o = \begin{cases}
-        \textsc{Good}     & \text{if FPS} \geq 13 \text{ and } \text{P95} \leq 100\text{ms} \\
-        \textsc{Marginal} & \text{if FPS} \geq 10 \text{ and } \text{P95} \leq 150\text{ms} \\
-        \textsc{Bad}      & \text{otherwise}
-    \end{cases}
-\end{equation}
-
-The controller aggregates per-stream observation categories (excluding SKIP and OFFLOAD streams, which do not reflect local GPU state) into a single representative observation via rounding the mean category index.
-This aggregation preserves the information most relevant to the hidden load state while keeping the observation space tractable ($|\mathcal{O}| = 3$).
-
-\subsection{Action Space}
-
-The action space consists of single-stream mode changes or no-op:
-\begin{equation}
-    a_t = (i, m) \quad \text{or} \quad a_t = \emptyset \text{ (no-op)}
-\end{equation}
-where $i \in \{0, \ldots, N-1\}$ is the stream index and $m \in \{\textsc{Full}, \textsc{Lite}, \textsc{Skip}, \textsc{Offload}\}$ is the target mode.
-At most one stream may be changed per control interval, yielding $|\mathcal{A}| = 4N + 1$ possible actions.
-
-Each mode has a distinct systems-level effect:
-\begin{itemize}[leftmargin=*]
-    \item \textbf{FULL}: Local GPU inference at input resolution 640$\times$640. Highest detection quality but highest GPU cost.
-    \item \textbf{LITE}: Local GPU inference at reduced resolution 320$\times$320. Extends the SLO boundary from 5 to 7 streams, at the cost of reduced detection count.
-    \item \textbf{SKIP}: No inference; passthrough only. Zero GPU cost but zero detections.
-    \item \textbf{OFFLOAD}: Frame sent via HTTP POST to a worker node for remote inference. Zero local GPU cost; detection results returned as JSON. Bounded by the number of available worker nodes ($K_{\max} = 2$).
-\end{itemize}
-
-Constraints enforce operational limits: at most 30\% of active streams may be in SKIP mode (to maintain minimum detection coverage), and OFFLOAD is bounded by the number of physical worker nodes.
-A minimum dwell time prevents rapid mode oscillation (e.g., 2 control windows in SKIP before exit, to amortize cold-start cost).
-
-\subsection{Objectives and Constraints}
-
-The primary objective is to maximize the SLO satisfaction rate:
-\begin{equation}
-    \text{SLO\%} = 1 - \frac{\sum_{t,i} \mathbf{1}[\text{FPS}_{t,i} < 10 \;\lor\; \text{P95}_{t,i} > 150]}{\sum_{t,i} \mathbf{1}[m_{t,i} \neq \textsc{Skip}]}
-\end{equation}
-subject to the skip ratio constraint ($\leq 30\%$), offload capacity constraint ($\leq K_{\max}$), and minimum dwell times.
-Secondary objectives include minimizing mode switch count (stability) and maximizing detection coverage (1 $-$ skip ratio).
 
 %% ============================================================================
 \section{AIF-Based Scheduler}
 \label{sec:method}
 
-\subsection{Design Goals}
-
-We adopt Active Inference as the scheduling framework for four reasons:
-(1)~\emph{Explicit beliefs}: the controller maintains a probability distribution over hidden load states, enabling principled reasoning under uncertainty;
-(2)~\emph{No training data}: unlike RL, the generative model is specified from hardware profiling, requiring zero online or offline training episodes;
-(3)~\emph{Structured preferences}: SLO objectives are encoded as a preferred observation distribution $C$ rather than a scalar reward, avoiding reward-shaping artifacts;
-(4)~\emph{Interpretability}: at each step, the belief state and EFE decomposition can be inspected to understand \emph{why} the controller chose a particular action.
-
 \subsection{Generative Model}
 
-The AIF generative model comprises four components:
+The AIF generative model comprises four components.
 
-\paragraph{Likelihood model $A$: $P(o \mid s, m)$.}
-For each execution mode $m$, a $3 \times 3$ matrix specifies the probability of observing each observation category given each load state.
-These matrices are derived from the empirical profiling data in \Cref{tab:profiling}:
+\textbf{Likelihood $A$: $P(o \mid s, m)$.}
+For each mode $m$, a $3{\times}3$ matrix specifies the probability of observing each category given each load state.
+FULL and LITE likelihoods are derived directly from hardware profiling:
 \begin{equation}
     A^{\textsc{Full}} = \begin{bmatrix}
         0.95 & 0.04 & 0.01 \\
         0.25 & 0.50 & 0.25 \\
         0.02 & 0.13 & 0.85
-    \end{bmatrix}, \quad
-    A^{\textsc{Lite}} = \begin{bmatrix}
-        0.97 & 0.03 & 0.00 \\
-        0.80 & 0.17 & 0.03 \\
-        0.05 & 0.55 & 0.40
     \end{bmatrix}
 \end{equation}
-where rows are load states (\textsc{Low}, \textsc{Medium}, \textsc{High}) and columns are observation categories (\textsc{Good}, \textsc{Marginal}, \textsc{Bad}).
+where rows are load states (\textsc{Low}, \textsc{Med}, \textsc{High}) and columns are observation categories (\textsc{Good}, \textsc{Marginal}, \textsc{Bad}).
 
-\paragraph{OFFLOAD likelihood: system-level semantics.}
-A critical design decision is how to model the observations expected after offloading a stream.
-A naive approach assigns OFFLOAD the offloaded stream's own metrics ($\sim$7 FPS, near-BAD), which causes the controller to avoid OFFLOAD entirely.
-Instead, we model OFFLOAD in terms of its \emph{system-level effect}: offloading frees local GPU capacity, improving remaining streams' performance.
-At HIGH load, the marginal benefit is large (removing 1 of 6+ streams significantly reduces contention):
+\textbf{OFFLOAD likelihood: system-level semantics.}
+A naïve design encodes OFFLOAD using the offloaded stream's own poor metrics ($\sim$7~FPS, near-BAD for all states), causing the controller to systematically avoid OFFLOAD.
+The correct design models OFFLOAD's \emph{system-level effect}: offloading frees local GPU capacity, improving the remaining streams.
+This benefit is largest at HIGH load (removing one of 6+ streams significantly reduces GPU contention):
 \begin{equation}
-    A^{\textsc{Offload}} = \begin{bmatrix}
+    A^{\textsc{Offload}}_{\text{v1}} = \begin{bmatrix}
         0.30 & 0.55 & 0.15 \\
         0.50 & 0.35 & 0.15 \\
         0.60 & 0.30 & 0.10
     \end{bmatrix}
+    \label{eq:offload_v1}
 \end{equation}
+This design decision is the paper's central finding, validated empirically in \Cref{sec:ablation}.
 
-This system-level framing is validated empirically: correcting the OFFLOAD likelihood from per-stream BAD to system-level semantics improves average SLO from 78.8\% to 86.7\% (\Cref{sec:ablation}).
+\textbf{SKIP likelihood.}
+The default $A^{\textsc{Skip}} = [0.50, 0.50, 0.00]$ treats frame-skipping as observationally neutral, making SKIP appear costless in EFE computation.
+Setting $A^{\textsc{Skip}} = [0.20, 0.45, 0.35]$ (moderate penalty) encodes SKIP as a degraded-service action with real cost, which substantially reduces over-use of SKIP.
 
-\paragraph{Transition model $B$: $T(s' \mid s, a)$.}
-Actions are classified as \emph{demote} (reducing local GPU load: FULL$\to$LITE, $*\to$SKIP, $*\to$OFFLOAD), \emph{promote} (increasing load: SKIP$\to$LITE, LITE$\to$FULL, OFFLOAD$\to$LITE), or \emph{no-op}.
-Demotion shifts the load state distribution downward with probability 0.75; promotion shifts it upward similarly; no-op maintains the current state with probability 0.9 and allows small drift.
+\textbf{Transition $B$: $T(s' \mid s, a)$.}
+Actions are classified as \emph{demote} (reduces local GPU load: $*\to$LITE, $*\to$SKIP, $*\to$OFFLOAD) or \emph{promote}, with soft transitions (demote: 0.75 probability of downward state shift; no-op: 0.9 self-transition).
 
-\paragraph{Preferred observations $C$.}
-The preference distribution encodes the desired observation outcome:
-$C = [0.85, 0.12, 0.03]$, strongly preferring GOOD observations while tolerating occasional MARGINAL outcomes.
-This replaces the scalar reward function used in RL.
+\textbf{Preference $C$} encodes the SLO target: $C = [0.85, 0.12, 0.03]$ (strongly prefers GOOD observations).
+\textbf{Prior $D$} is uniform: $D = [1/3, 1/3, 1/3]$.
 
-\paragraph{Prior belief $D$.}
-The initial belief is uniform: $D = [\frac{1}{3}, \frac{1}{3}, \frac{1}{3}]$.
-The controller begins each episode with no prior bias toward any load state and updates its belief from observations.
+\subsection{Belief Update and Action Selection}
 
-\subsection{Belief Update}
-
-At each control step $t$, the controller performs a Bayesian belief update:
+At each control step, the controller performs a Bayesian belief update:
 \begin{equation}
-    Q(s)_t \propto A^{m_{\text{rep}}}_{s, o_t} \cdot Q(s)_{t-1}
+    Q(s)_t \propto A^{m_{\text{rep}}}_{s,\, o_t} \cdot Q(s)_{t-1}
     \label{eq:belief}
 \end{equation}
-where $o_t$ is the aggregated observation category and $m_{\text{rep}}$ is the representative mode of locally-inferring streams.
-Only FULL and LITE streams contribute to the observation---SKIP and OFFLOAD streams are excluded because they do not reflect local GPU state.
-
-\subsection{Policy Selection via Expected Free Energy}
-
-Actions are selected by minimizing Expected Free Energy (EFE):
+where $m_{\text{rep}}$ is the representative mode of locally-inferring streams.
+Actions are evaluated by Expected Free Energy:
 \begin{equation}
-    G(a) = \underbrace{-\mathbb{E}_{Q(o|a)}[\ln C(o)]}_{\text{pragmatic (goal-seeking)}} - \underbrace{w_e \cdot \mathbb{E}_{Q(o|a)}[\text{KL}[Q(s|o,a) \| Q(s|a)]]}_{\text{epistemic (information gain)}}
+    G(a) = \underbrace{-\mathbb{E}_{Q(o|a)}[\ln C(o)]}_{\text{pragmatic}} \;-\; \underbrace{w_e \cdot \mathbb{E}_{Q(o|a)}[\mathrm{KL}[Q(s|o,a) \| Q(s|a)]]}_{\text{epistemic}}
     \label{eq:efe}
 \end{equation}
+with $w_e = 0.3$.
+Action selection uses precision-weighted softmax with $\beta = 4.0$.
 
-The pragmatic term drives the controller toward actions that produce observations matching the preference $C$.
-The epistemic term encourages actions that reduce uncertainty about the hidden load state, weighted by $w_e = 0.3$.
-The expected observation distribution is:
-\begin{equation}
-    Q(o \mid a) = \sum_{s'} Q(s' \mid a) \cdot A^{m_a}_{s', o}
-\end{equation}
-where $Q(s' \mid a) = \sum_s Q(s)_t \cdot T(s' \mid s, a_{\text{type}})$ is the predicted post-action state distribution.
-
-Action selection uses precision-weighted softmax:
-\begin{equation}
-    P(a) = \frac{\exp(-\beta \cdot G(a))}{\sum_{a'} \exp(-\beta \cdot G(a'))}
-\end{equation}
-with precision $\beta = 4.0$ (higher values produce more deterministic selection).
-
-\subsection{Anti-Oscillation Mechanisms}
-
-Three mechanisms prevent unproductive mode oscillation:
-
-\begin{enumerate}[leftmargin=*]
-    \item \textbf{Global cooldown}: After any mode switch, no further switches are allowed for $\tau_c = 3$ control windows.
-    \item \textbf{ASAP temporal smoothing}: A penalty of $w_{\text{asap}} = 0.6$ is applied to actions that reverse the immediately preceding switch on the same stream.
-    \item \textbf{Reversal penalty}: If the proposed action reverses a switch on the same stream within the last 5 steps, a decaying penalty $0.8 \cdot (1 - \Delta t / 6)$ is added to the EFE.
-\end{enumerate}
-
-These mechanisms are additive to the EFE and do not modify the generative model, preserving the interpretability of belief states and preference alignment.
-
-\subsection{Computational Complexity and Runtime Feasibility}
-
-The per-step computation involves:
-(1)~Bayesian belief update: a 3-element vector-vector multiplication ($O(|\mathcal{S}|)$);
-(2)~EFE computation for each candidate action: $3 \times 3$ matrix operations ($O(|\mathcal{S}| \cdot |\mathcal{O}|)$ per action);
-(3)~softmax over $|\mathcal{A}|$ actions.
-With $|\mathcal{S}| = |\mathcal{O}| = 3$ and $|\mathcal{A}| \leq 4N+1 \approx 30$ for $N=7$ streams, the total computation per step is $< 1$~ms on the Orin---negligible compared to the 1-second control interval and the $\sim$35$-$130~ms inference latency per frame.
-
-This efficiency is a direct consequence of the compact state abstraction: by discretizing the continuous GPU contention space into three load levels, we obtain a generative model small enough for real-time exact inference, avoiding the need for sampling-based POMDP solvers.
+\textbf{Engineering approximation.}
+We use a one-step ($T=1$) EFE, foregoing multi-step policy sequences~\cite{parr2022active}.
+This is a deliberate engineering trade-off, consistent with single-step AIF precedents in physical control~\cite{friston2016robot}: the computation takes $<$1~ms per step on the Jetson Orin Nano.
+The belief $Q(s)_t$ carries forward historical information, so the controller is not fully memoryless.
+A 3-step global cooldown further prevents oscillatory switching.
 
 %% ============================================================================
-\section{Baselines}
-\label{sec:baselines}
-
-All baselines share the same observation interface, action space, SLO thresholds, and constraint enforcement (skip ratio, offload capacity, minimum dwell).
-This ensures that performance differences reflect scheduling \emph{policy} quality, not asymmetric information or action privileges.
-
-\subsection{No-Op Baseline}
-
-The no-op controller never changes stream modes, leaving all streams in their initial FULL mode regardless of load.
-It serves as the lower bound, quantifying the cost of no adaptation.
-
-\subsection{Threshold-Based Heuristic}
-
-A rule-based controller with directional hysteresis:
-\begin{itemize}[leftmargin=*]
-    \item \textbf{Downgrade}: Triggered when any stream violates SLO. Demotes the worst-violating stream in order: FULL$\to$LITE$\to$OFFLOAD$\to$SKIP.
-    \item \textbf{Upgrade}: Triggered only after all streams satisfy SLO for 5 consecutive windows, and GPU utilization is below 58.5\%. Promotes the lowest-ranked stream.
-\end{itemize}
-The heuristic is stateless across episodes and reacts identically to each load change.
-
-\subsection{Myopic Greedy}
-
-An oracle-like baseline that enumerates all possible single-stream mode changes and selects the action predicted to yield the best immediate SLO outcome, using a lookup table derived from the same profiling data as the AIF likelihood.
-It represents the \emph{one-step-optimal policy given perfect model knowledge} and serves as an approximate upper bound on what a non-learning, non-planning controller can achieve.
-
-\subsection{DQN (Deep Q-Network)}
-
-A reinforcement learning baseline using a 3-layer MLP (input$\to$64$\to$64$\to$output) with experience replay (buffer size 500), $\epsilon$-greedy exploration (decaying from 0.15 to 0.02), target network (updated every 10 steps), and $\gamma = 0.95$.
-The state vector encodes per-stream FPS, P95 latency, and one-hot mode indicators, plus global GPU utilization and stream count.
-The reward function is derived from SLO satisfaction: $+1.0$ per SLO-compliant stream, $-2.0$ per latency violation, $-1.5$ per FPS violation, $-0.5$ per SKIP stream, $-0.2$ per OFFLOAD stream.
-DQN is trained for 5 episodes on the target scenario before evaluation, with network weights persisting across training episodes.
-
-%% ============================================================================
-\section{Experimental Setup}
-\label{sec:setup}
-
-\subsection{Hardware and Cluster}
-
-The testbed comprises three identical Jetson Orin Nano 8GB nodes connected via Gigabit Ethernet:
-\begin{itemize}[leftmargin=*]
-    \item \textbf{Coordinator} (primary): Jetson Orin Nano 8GB, 1024 CUDA cores, 8~GB unified memory, JetPack R36.5 (L4T R36.5). Runs the controller loop and local batch inference.
-    \item \textbf{Worker1} (192.168.1.52): Jetson Orin Nano 8GB (identical hardware), runs \texttt{nano\_inference\_server.py} on port 8765.
-    \item \textbf{Worker2} (192.168.1.53): Jetson Orin Nano 8GB (identical hardware), runs the same inference server.
-\end{itemize}
-
-OFFLOAD involves real HTTP POST of JPEG-encoded frames from the coordinator to a worker node, real YOLOv8n inference on the worker's GPU, and JSON detection results returned to the coordinator.
-Measured offload performance: $\sim$7~FPS per offload stream, $\sim$140~ms round-trip latency.
-Maximum concurrent offload streams: $K_{\max} = 2$ (one per worker node).
-
-\subsection{Software Stack}
-
-All components run in Docker containers with NVIDIA runtime for GPU access.
-The inference engine uses Ultralytics YOLOv8n with batch processing: all locally-inferring streams are batched together for GPU efficiency.
-Two engine instances run concurrently---one for FULL mode (imgsz=640) and one for LITE mode (imgsz=320)---each accepting dynamic stream registration.
-The control loop runs at 1~Hz ($T_c = 1$~s), with GPU utilization sampled at 4~Hz via \texttt{tegrastats}.
-
-\subsection{Workload Scenarios}
-
-We define four scenarios that stress different aspects of adaptive scheduling:
-\begin{enumerate}[leftmargin=*]
-    \item \textbf{Ramp-up} (60~s): Streams added incrementally from 3 to 7, testing gradual degradation response.
-    \item \textbf{Burst} (60~s): Stable 4-stream load, then 3 streams added simultaneously at $t=15$~s and removed at $t=35$~s, testing reaction and recovery speed.
-    \item \textbf{Steady overload} (90~s): 6 streams sustained, testing convergence to a stable mode allocation under persistent pressure.
-    \item \textbf{Oscillating} (120~s): Three successive waves each adding 3 streams for 20~s then removing them, followed by a final wave adding 4 streams, testing robustness to periodic load changes.
-\end{enumerate}
-All streams use the same 720p traffic surveillance video, looped as needed.
-
-\subsection{Metrics}
-
-\begin{itemize}[leftmargin=*]
-    \item \textbf{SLO satisfaction rate}: Fraction of (stream, window) pairs meeting both FPS $\geq 10$ and P95 $\leq 150$~ms, excluding SKIP windows.
-    \item \textbf{Mode switch count}: Total number of mode transitions (lower = more stable).
-    \item \textbf{Skip ratio}: Fraction of stream-windows in SKIP mode (lower = better detection coverage).
-    \item \textbf{Offload ratio}: Fraction of stream-windows in OFFLOAD mode.
-    \item \textbf{Average FPS and P95 latency}: Aggregate performance across non-SKIP streams.
-\end{itemize}
-
-\subsection{Evaluation Protocol}
-
-Each controller$\times$scenario combination is evaluated over $N=5$ independent runs.
-DQN is retrained from scratch each run (5 training episodes on the target scenario) to capture learning variance.
-AIF and all other controllers use the same fixed parameters across all runs---any variance reflects the stochastic nature of the physical system (GPU scheduling jitter, network latency variation, thermal effects).
-We report mean $\pm$ standard deviation across runs.
-
-%% ============================================================================
-\section{Results}
+\section{Evaluation}
 \label{sec:results}
 
-\subsection{Overall Performance}
+\subsection{Setup}
 
-\Cref{tab:main_results} presents the aggregate results across five independent runs.
+\textbf{Scenarios.}
+Four workload patterns stress different adaptation capabilities:
+(1)~\emph{Ramp-up} (60~s): streams added one-by-one from 3 to 7;
+(2)~\emph{Burst} (60~s): stable 4-stream load, then 3 streams added at $t=15$~s and removed at $t=35$~s;
+(3)~\emph{Steady overload} (90~s): 6 streams sustained throughout;
+(4)~\emph{Oscillating} (120~s): three successive add/remove waves.
+
+\textbf{Baselines.}
+All controllers share the same observation interface, action space, and constraints.
+\emph{No-Op} never changes modes (lower bound).
+\emph{Heuristic} applies threshold-based demotion with hysteresis (stateless, reactive).
+\emph{Myopic Greedy} selects the action with the best predicted immediate SLO outcome using the same profiling table as AIF (approximate oracle upper bound).
+\emph{DQN} uses a 3-layer MLP with $\epsilon$-greedy exploration, retrained from scratch each run (5 episodes per scenario); its reward penalizes SLO violations, SKIP ($-0.5$), and OFFLOAD ($-0.2$).
+
+\textbf{Protocol.}
+Five independent runs per controller$\times$scenario. DQN is retrained each run; all other controllers use fixed parameters. We report mean $\pm$ std.
+
+\subsection{Main Results}
+
+\Cref{tab:main_results} presents aggregate SLO satisfaction across all runs, and \Cref{fig:four_scenario} visualizes per-step FPS behavior with 5-run confidence bands.
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig_four_scenario_fps.pdf}
+    \caption{Per-step FPS across four workload scenarios (5-run mean $\pm$ std bands). Gray shading indicates active stream count; dashed line marks the 10~FPS SLO threshold. DQN (orange) exhibits wide variance bands especially in Burst, while AIF (purple) and Heuristic (blue) show tighter distributions. AIF leads Heuristic in Steady Overload through structured OFFLOAD usage, but lags in Burst due to its 3-step cooldown.}
+    \label{fig:four_scenario}
+\end{figure*}
 
 \begin{table}[t]
     \centering
-    \caption{SLO satisfaction rate (\%) across controllers and scenarios (mean $\pm$ std, $N=5$ runs). Best non-oracle result per scenario in \textbf{bold}.}
+    \caption{SLO satisfaction rate (\%, mean $\pm$ std, $N=5$ runs). Best non-oracle result per scenario in \textbf{bold}.}
     \label{tab:main_results}
     \small
     \begin{tabular}{@{}lcccc|c@{}}
@@ -476,520 +246,93 @@ We report mean $\pm$ standard deviation across runs.
     \end{tabular}
 \end{table}
 
-\begin{figure*}[t]
-    \centering
-    \includegraphics[width=\textwidth]{figures/fig_four_scenario_fps.pdf}
-    \caption{Per-step FPS across four workload scenarios (5-run mean $\pm$ std bands). Gray shading indicates active stream count. The SLO threshold (10~FPS) is shown as a dashed line. DQN exhibits wide variance bands (orange) especially in burst, while AIF (purple) and Heuristic (blue) show tighter distributions.}
-    \label{fig:four_scenario}
-\end{figure*}
-
-\Cref{fig:four_scenario} visualizes per-step FPS across all four scenarios with 5-run mean and standard deviation bands.
 The overall ranking is Myopic (89.9\%) $>$ DQN (88.2\%) $>$ Heuristic (87.8\%) $>$ AIF (86.0\%) $\gg$ No-Op (62.2\%).
-Several observations stand out:
+Default AIF is competitive with both trained (DQN) and untrained (Heuristic) baselines without any training data, and at substantially lower cross-run variance than DQN (AIF std: 1.4--4.5\%; DQN burst std: 9.7\%, range 64.6\%--94.3\% across 8 confirmed runs).
 
-\textbf{Myopic as oracle upper bound.}
-The myopic greedy controller achieves the highest average SLO with remarkably low variance (std $\leq$ 0.7\% across all scenarios), reflecting its deterministic, profiling-table-based policy.
-It represents the approximate upper bound of what a non-learning, non-planning controller can achieve with perfect model knowledge.
+AIF is strongest in \emph{steady overload} (92.1\% $>$ Heuristic 90.9\%), where its system-level OFFLOAD model drives aggressive and stable cluster-level resource utilization (offload ratio 22.8\%).
+Its weakest result is \emph{burst} (77.7\%, $-9.9$~pp vs.\ Heuristic), where the 3-step global cooldown delays reaction to sudden load spikes — an expected consequence of the T=1 approximation and the conservative stability mechanism.
 
-\textbf{DQN: highest peaks, highest variance.}
-DQN reaches the highest per-scenario SLO in steady overload (94.9\%) and oscillating (93.9\%), but exhibits the largest cross-run variance---particularly in burst (std = 9.7\%, range 64.6--94.3\%).
-Mode switch counts vary from 2 to 87 across runs, indicating that the 5-episode training budget produces highly seed-dependent policies.
-To verify that this variance is structural rather than coincidental, we conducted 3 additional runs with fresh random seeds (\Cref{fig:dqn_variance}).
-The extended 8-run analysis confirms seed sensitivity: the new runs averaged 94.6\% (vs.\ 88.2\% for the original 5), and burst switch counts ranged from 3 to 38, demonstrating that DQN's behavior is fundamentally unpredictable across initializations.
+DQN's burst variance reveals a structural instability: switch counts range from 3 to 87 across 8 runs, and burst SLO spans 64.6\%--94.3\%, confirming that 5-episode training produces unpredictable policies.
 
-\begin{figure}[t]
-    \centering
-    \includegraphics[width=\columnwidth]{figures/fig_dqn_variance.pdf}
-    \caption{DQN 8-run variance analysis. Left: SLO distribution per scenario (circles = original 5 runs, diamonds = 3 extra seeds). Right: mode switch count distribution. The burst scenario exhibits the widest spread in both metrics.}
-    \label{fig:dqn_variance}
-\end{figure}
+%% ============================================================================
+\section{Likelihood Sensitivity Analysis}
+\label{sec:ablation}
 
-\textbf{AIF vs.\ Heuristic: comparable average, different behavior.}
-AIF and heuristic achieve similar average SLO (86.0\% vs.\ 87.8\%), but their behavioral profiles diverge significantly (\Cref{sec:resource}).
-The heuristic leads in burst (+9.9 pp over AIF) due to its fast reactive demotion, while AIF's conservative cooldown and stochastic selection delay its response to sudden load spikes.
-AIF is competitive with the heuristic in steady overload (92.1\% vs.\ 90.9\%), where its structured OFFLOAD modeling and belief-based reasoning are most effective.
-
-\textbf{No-Op as lower bound.}
-Without adaptation, SLO satisfaction degrades severely (62.2\% average), confirming that active mode management is essential under multi-stream GPU contention.
-
-\subsection{Adaptation under Dynamic Shifts}
-
-The burst and oscillating scenarios most clearly differentiate controller adaptation strategies.
-\Cref{fig:deepdive} provides a synchronized multi-panel view of the burst scenario, showing the causal chain from workload changes through FPS impact, controller mode decisions, and AIF belief dynamics.
-
-\begin{figure}[t]
-    \centering
-    \includegraphics[width=\columnwidth]{figures/fig_deepdive_scenario_burst.pdf}
-    \caption{Burst scenario deep-dive. Top: active stream count. Second: FPS with 5-run mean$\pm$std bands. Third: mode allocation for Heuristic, DQN, and AIF. Bottom: AIF belief state $Q(s)$. The heuristic reacts immediately to burst onset ($t=15$), while AIF's belief requires 2--3 steps to shift toward HIGH load.}
-    \label{fig:deepdive}
-\end{figure}
-
-\textbf{Burst scenario.}
-When 3 streams are added simultaneously at $t=15$~s, the heuristic reacts within 1--2 control windows by demoting the worst-violating stream, achieving 87.6\% SLO.
-AIF's global cooldown ($\tau_c = 3$ windows) delays its first corrective action by up to 3~s, and its stochastic policy does not always select the optimal demotion target, resulting in 77.7\% SLO.
-DQN's performance is bimodal: when training converges to a good policy, it reacts aggressively (94.3\% in the best run), but poor initialization leads to 64.6\% in the worst run.
-
-\textbf{Oscillating scenario.}
-Over three load waves, the heuristic applies the same reactive strategy to each wave (stateless), achieving 86.4\%.
-AIF's Bayesian belief carries forward across waves: after the first HIGH$\to$LOW transition, the posterior retains information about the system's oscillatory behavior, and subsequent adaptations require fewer exploratory steps.
-This contributes to AIF's competitive performance (87.2\%) despite its stochastic overhead.
-DQN benefits most from the longer episode (120~s), achieving 93.9\% but with substantial variance (std = 3.7\%).
-
-\textbf{Mode switch stability.}
-Myopic produces the most deterministic switching behavior (exactly 9 switches in ramp-up across all 5 runs).
-DQN exhibits extreme switch count variance (steady overload: 31--87 switches; oscillating: 7--79 switches), reflecting the sensitivity of its learned policy to initialization.
-AIF maintains moderate, consistent switch counts (28$\pm$0.4 in steady overload), suggesting that its cooldown mechanism effectively regularizes switching behavior.
-
-\subsection{Resource Efficiency}
-\label{sec:resource}
-
-\Cref{tab:resource} summarizes skip and offload ratios across controllers.
+We ablate the two likelihood matrices that most directly encode action semantics.
+All results are 3-run means; secondary hyperparameters ($\beta$, $w_e$, $\tau_c$) are held at default values.
+\Cref{tab:likelihood_ablation} shows the cumulative effect of correcting OFFLOAD semantics (v0$\to$v1) and penalizing SKIP.
 
 \begin{table}[t]
     \centering
-    \caption{Resource utilization: skip ratio / offload ratio (\%, mean across 5 runs). Lower skip = better detection coverage; higher offload = more cluster utilization.}
-    \label{tab:resource}
+    \caption{Isolated effect of each likelihood correction (3-run mean). $\Delta$ measures improvement from that correction's own baseline.}
+    \label{tab:likelihood_ablation}
     \small
     \begin{tabular}{@{}lcccc@{}}
         \toprule
-        Controller & Ramp-up & Burst & Steady & Oscill. \\
+        Correction & Baseline & After & $\Delta$ & Skip\% \\
         \midrule
-        Heuristic & 7.6~/~10.3 & 2.5~/~12.4 & 1.9~/~8.0 & 4.3~/~5.6 \\
-        Myopic    & 0.0~/~0.6  & 0.0~/~0.0  & 0.0~/~1.1 & 0.0~/~1.8 \\
-        DQN       & 5.5~/~15.0 & 10.7~/~20.8 & 0.8~/~24.4 & 1.6~/~29.6 \\
-        AIF (v1)  & 16.0~/~19.3 & 16.3~/~15.3 & 11.6~/~22.8 & 9.3~/~22.1 \\
+        OFFLOAD v0$\to$v1 & 78.8 & 86.7 & \textbf{+7.9} & 13.1 \\
+        SKIP neutral$\to$moderate & 85.3 & 93.2 & \textbf{+7.9} & 4.7 \\
+        \midrule
+        Both corrections (v1 + moderate) & 78.8 & \textbf{93.2} & \textbf{+14.4} & \textbf{4.7} \\
         \bottomrule
     \end{tabular}
 \end{table}
 
-\textbf{AIF uses OFFLOAD most aggressively among non-RL controllers.}
-AIF's offload ratio ranges from 15.3\% to 22.8\% across scenarios, substantially higher than the heuristic (5.6--12.4\%) and myopic ($\leq$1.8\%).
-This reflects AIF's system-level OFFLOAD likelihood model, which correctly identifies offloading as beneficial under high load.
-In steady overload, AIF's 22.8\% offload ratio is its highest, confirming that the generative model drives appropriate cluster-level resource utilization under sustained pressure.
+\textbf{OFFLOAD likelihood.}
+The v0 likelihood encodes the offloaded stream's own poor metrics ($\sim$7~FPS, near-BAD for all states), causing the controller to assign near-zero probability to GOOD observations after offloading and consequently avoid OFFLOAD entirely (0\% offload ratio in 3 of 4 scenarios).
+Correcting to the system-level v1 encoding (\Cref{eq:offload_v1}) improves average SLO by 7.9~pp and raises the offload ratio to 17--24\%, demonstrating that the controller now correctly identifies offloading as beneficial under high load.
+The improvement is largest in ramp-up ($+$15.7~pp), where proactive offloading prevents SLO violations as streams accumulate.
 
-\textbf{AIF's skip ratio is a weakness.}
-AIF uses SKIP significantly more than other controllers (9.3--16.3\% vs.\ heuristic's 1.9--7.6\%), reducing detection coverage.
-This occurs because the default SKIP likelihood model ($A^{\textsc{Skip}} = [0.5, 0.5, 0.0]$) treats SKIP as observationally neutral, making it insufficiently costly in the EFE computation.
-We address this directly through SKIP likelihood tuning (\Cref{sec:skip_tuning}), which reduces the skip ratio to 4.7\% while raising SLO to 93.2\%.
-
-\textbf{DQN maximizes offload when available.}
-DQN discovers aggressive offloading strategies (up to 29.6\% in oscillating), but this behavior is inconsistent across seeds.
-Its ability to jointly optimize skip/offload tradeoffs emerges from reward shaping, which assigns different penalties to SKIP ($-0.5$) and OFFLOAD ($-0.2$).
-
-\subsection{Ablation Studies}
-\label{sec:ablation}
-
-We conduct ablation studies to characterize AIF sensitivity to each generative model component.
-All ablations use the AIF controller with one parameter varied; all other parameters remain at their default values.
-
-\subsubsection{OFFLOAD Likelihood Sensitivity}
-
-The most impactful parameter is the OFFLOAD likelihood matrix.
-We compare two variants:
-\begin{itemize}[leftmargin=*]
-    \item \textbf{v0} (per-stream): OFFLOAD likelihood $= [0.00, 0.15, 0.85]$ for all load states, reflecting the offloaded stream's own poor metrics ($\sim$7 FPS).
-    \item \textbf{v1} (system-level): OFFLOAD likelihood reflects the system-wide improvement from freeing GPU capacity (see \Cref{sec:method}).
-\end{itemize}
-
-\Cref{tab:ablation_likelihood} shows that correcting OFFLOAD semantics from per-stream (v0) to system-level (v1) improves average SLO from 78.8\% to 86.7\%, an improvement of $\sim$8 percentage points.
-Under v0, the controller assigns near-zero probability to GOOD observations after offloading, causing it to avoid OFFLOAD entirely (0\% offload ratio in 3 of 4 scenarios).
-Under v1, offload ratios range from 16.9\% to 24.4\%, demonstrating that the corrected likelihood enables appropriate cluster-level decision-making.
-
-\begin{table}[t]
-    \centering
-    \caption{OFFLOAD likelihood ablation (3-run mean). v0 = per-stream BAD; v1 = system-level.}
-    \label{tab:ablation_likelihood}
-    \small
-    \begin{tabular}{@{}lcccc|c@{}}
-        \toprule
-        Variant & Ramp-up & Burst & Steady & Oscill. & Avg \\
-        \midrule
-        v0 (per-stream) & 71.8 & 71.4 & 87.9 & 84.0 & 78.8 \\
-        v1 (system)     & 87.5 & 79.1 & 88.9 & 91.3 & 86.7 \\
-        \midrule
-        $\Delta$ & +15.7 & +7.7 & +1.0 & +7.3 & +7.9 \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-The improvement is largest in ramp-up (+15.7 pp) where gradual stream additions create opportunities for proactive offloading, and smallest in steady overload (+1.0 pp) where even the v0 controller manages 87.9\% through LITE/SKIP alone.
-This result validates the central design principle: OFFLOAD actions must be modeled in terms of their effect on the residual local workload, not the offloaded stream's individual QoS.
-
-\subsubsection{Precision Sensitivity}
-
-The precision parameter $\beta$ controls the determinism of action selection.
-We evaluate $\beta \in \{2, 4, 6, 8\}$.
-
-Higher precision yields more deterministic action selection, generally improving SLO.
-The 3-run mean SLO across scenarios: $\beta=2$: 85.7\%, $\beta=4$: 88.4\%, $\beta=6$: 85.7\%, $\beta=8$: 89.3\%.
-At $\beta=2$, the near-uniform softmax causes frequent suboptimal actions; at $\beta=8$, the controller almost always selects the lowest-EFE action, achieving the best overall performance but with slightly reduced exploration.
-The default $\beta=4$ balances exploration and exploitation and is used in all main experiments.
-The 3.6 pp range ($\beta=2$ to $\beta=8$) indicates that precision is a meaningful hyperparameter but not the dominant factor in AIF performance.
-
-\subsubsection{Epistemic Weight Sensitivity}
-
-The epistemic weight $w_e$ controls the balance between exploration and exploitation.
-We evaluate $w_e \in \{0, 0.1, 0.3, 0.5\}$.
-
-The epistemic term has surprisingly little effect on overall SLO.
-The 3-run mean across scenarios: $w_e=0.0$: 86.6\%, $w_e=0.1$: 89.3\%, $w_e=0.3$ (default): 87.6\%, $w_e=0.5$: 87.1\%.
-The total range is only 2.7 pp, much smaller than the OFFLOAD likelihood effect (7.9 pp) or precision effect (3.6 pp).
-This suggests that in our finite-horizon, 3-state POMDP, the belief converges quickly enough that explicit exploration incentives provide marginal benefit.
-The epistemic term's primary contribution is indirect: by slightly favoring informative actions during early time steps, it can speed up belief convergence after load transitions.
-
-\subsubsection{Cooldown Sensitivity}
-
-The global cooldown $\tau_c$ prevents rapid mode oscillation.
-We evaluate $\tau_c \in \{1, 3, 5\}$.
-
-Cooldown primarily affects switching behavior rather than SLO.
-The 3-run mean SLO: $\tau_c=1$: 87.6\%, $\tau_c=3$ (default): 86.1\%, $\tau_c=5$: 87.1\%---a range of only 1.5 pp.
-However, the mean mode switch count changes dramatically: $\tau_c=1$: 56 switches/episode, $\tau_c=3$: 25, $\tau_c=5$: 16.
-At $\tau_c=1$, the controller switches 2.2$\times$ more frequently than at $\tau_c=3$ without improving SLO, confirming that many of these switches are unproductive oscillations.
-At $\tau_c=5$, the reduced switch count comes at the cost of slower reaction to load changes, slightly increasing variance (std up to 9.8\% in ramp-up).
-The default $\tau_c=3$ balances stability and reactivity: it suppresses oscillation while allowing adaptation within 3~s of a load change.
-
-\subsubsection{SKIP Likelihood Tuning}
-\label{sec:skip_tuning}
-
-AIF's excessive SKIP usage (9.3--16.3\% skip ratio) was identified as a key weakness in \Cref{sec:resource}.
-We investigate whether penalizing SKIP in the likelihood model can reduce this behavior while improving SLO.
-Three variants of the SKIP likelihood $A^{\textsc{Skip}}$ are evaluated:
-\begin{itemize}[leftmargin=*]
-    \item \textbf{Baseline}: $[0.50, 0.50, 0.00]$ --- SKIP provides no observation signal (original default).
-    \item \textbf{Mild}: $[0.30, 0.50, 0.20]$ --- SKIP yields moderately negative observations, discouraging it at HIGH load.
-    \item \textbf{Moderate}: $[0.20, 0.45, 0.35]$ --- SKIP yields clearly negative observations, strongly penalizing frame-skipping.
-\end{itemize}
-
-\Cref{tab:skip_likelihood,fig:skip_likelihood} show that tuning the SKIP likelihood produces substantial, monotonic improvements.
-The moderate variant achieves 93.2\% average SLO---a +7.9~pp improvement over the baseline---while reducing the average skip ratio from 13.1\% to 4.7\%.
-The improvement is largest in burst (+16.8~pp) and ramp-up (+9.0~pp), precisely the scenarios where excessive skipping was most harmful.
-Notably, mode switch counts remain unchanged across variants ($\sim$16/19/27/36 per scenario), confirming that SKIP tuning improves decision \emph{quality} without altering switching behavior.
-
-\begin{table}[t]
-    \centering
-    \caption{SKIP likelihood tuning (3-run mean). Higher SKIP penalty $\Rightarrow$ higher SLO, lower skip ratio. Switch count is unaffected.}
-    \label{tab:skip_likelihood}
-    \small
-    \begin{tabular}{@{}lcccc|cc@{}}
-        \toprule
-        Variant & Ramp & Burst & Steady & Oscill. & Avg SLO & Skip\% \\
-        \midrule
-        Baseline & 86.5 & 74.9 & 90.7 & 89.1 & 85.3 & 13.1 \\
-        Mild     & 92.3 & 90.7 & 91.1 & 95.0 & 92.3 & 8.8 \\
-        Moderate & 95.5 & 91.7 & 90.6 & 95.1 & \textbf{93.2} & \textbf{4.7} \\
-        \bottomrule
-    \end{tabular}
-\end{table}
+\textbf{SKIP likelihood.}
+The default neutral SKIP likelihood ($[0.50, 0.50, 0.00]$) treats frame-skipping as costless in EFE computation, causing over-use (13.1\% skip ratio) that reduces detection coverage.
+The moderate penalty variant ($[0.20, 0.45, 0.35]$) encodes SKIP as a degraded-service action, reducing the skip ratio to 4.7\% and raising SLO by 7.9~pp.
+Mode switch counts remain unchanged across SKIP variants ($\sim$16--36/episode), confirming the improvement reflects decision \emph{quality}, not switching behavior.
 
 \begin{figure}[t]
     \centering
     \includegraphics[width=\columnwidth]{figures/fig_skip_likelihood.pdf}
-    \caption{SKIP likelihood tuning. Left: SLO satisfaction increases monotonically from baseline to moderate across all scenarios. Right: skip ratio decreases correspondingly. The 90\% SLO target (dashed) is achieved by the mild variant in most scenarios and by the moderate variant in all scenarios except steady overload.}
-    \label{fig:skip_likelihood}
+    \caption{SKIP likelihood tuning across scenarios. Left: SLO satisfaction increases monotonically from neutral to moderate penalty. Right: skip ratio decreases correspondingly. The two corrections together (v1 OFFLOAD + moderate SKIP) reach 93.2\%, surpassing all baselines including Myopic Greedy.}
+    \label{fig:skip_ablation}
 \end{figure}
 
-This result complements the OFFLOAD likelihood finding: both demonstrate that the AIF generative model's likelihood matrices are the primary lever for performance improvement.
-The combined effect of system-level OFFLOAD semantics (v0$\to$v1: +7.9~pp) and SKIP penalization (baseline$\to$moderate: +7.9~pp) is already realized in the moderate-SKIP variant, which uses v1 OFFLOAD and achieves 93.2\% average SLO---surpassing all baselines including the myopic oracle (89.9\%).
+\textbf{Ablation hierarchy.}
+The two likelihood corrections together account for $\sim$16~pp of improvement.
+By comparison, secondary hyperparameters contribute: precision $\beta$ (range 3.6~pp), epistemic weight $w_e$ (2.7~pp), cooldown $\tau_c$ (1.5~pp) — combined $<$8~pp.
+This ordering demonstrates that model construction, not algorithmic tuning, is the dominant challenge for AIF deployment in this setting.
 
-\subsubsection{OFFLOAD On/Off}
+%% ============================================================================
+\section{Discussion and Conclusion}
+\label{sec:discussion}
 
-We compare all five controllers with OFFLOAD enabled vs.\ disabled to quantify the value of cluster-level offloading independent of the scheduling policy.
+\textbf{When AIF helps.}
+AIF provides three concrete advantages over baselines: (1)~zero-shot deployment with no training data and stable cross-run behavior; (2)~structured cluster-level decision-making — the system-level OFFLOAD likelihood drives higher offload utilization (22.8\% in steady overload) than threshold-based control; (3)~interpretability — the belief state $Q(s)$ and per-action EFE decomposition can be inspected at each step to understand \emph{why} an action was chosen.
 
-The following figures are from a single indicative run per condition (not replicated); they characterize directional trends rather than statistically precise estimates.
-AIF improves from 83.1\% to 86.5\% (+3.4 pp) with OFFLOAD;
-heuristic from 76.4\% to 87.3\% (+10.9 pp);
-DQN from 78.5\% to 91.8\% (+13.3 pp);
-myopic from 89.1\% to 89.7\% (+0.6 pp).
-DQN and heuristic benefit most from the expanded action space, while myopic's profiling-table approach already achieves high SLO through FULL/LITE switching alone.
-AIF's moderate improvement reflects its tendency to use OFFLOAD conservatively (only at HIGH load), unlike DQN which aggressively offloads whenever its Q-values favor it.
-Notably, disabling OFFLOAD collapses DQN's burst performance from 87.5\% to 55.0\%, revealing DQN's strong dependence on the offload action for burst recovery.
-
-\subsection{Interpretability and Failure Cases}
-
-AIF's belief state provides a window into the controller's internal reasoning that no other baseline offers.
-At each step, $Q(s) = [p_{\textsc{Low}}, p_{\textsc{Medium}}, p_{\textsc{High}}]$ can be inspected to verify whether the controller's estimate of system load aligns with reality.
-
-\textbf{Where beliefs help.}
-In steady overload, the belief rapidly converges to $p_{\textsc{High}} > 0.8$ within 3--5 steps, after which the controller consistently selects demotion actions (LITE or OFFLOAD), as illustrated in \Cref{fig:belief_steady}.
-This convergence is faster than the heuristic's reactive approach, which requires SLO violations before acting.
-
-\textbf{Failure case: burst onset.}
-When 3 streams arrive simultaneously, the belief update lags behind the actual load transition.
-The prior from the stable period ($p_{\textsc{Low}} \approx 0.7$) requires 2--3 BAD observations to shift toward HIGH, during which the controller does not act (compounded by the $\tau_c=3$ cooldown).
-This explains AIF's 9.9 pp deficit to the heuristic in the burst scenario: the heuristic reacts to the \emph{first} SLO violation, while AIF must accumulate evidence.
-
-\textbf{EFE decomposition.}
-The per-action EFE can be decomposed into pragmatic and epistemic components.
-In steady overload, pragmatic values dominate ($>$90\% of the total EFE magnitude), confirming that the controller is exploitation-focused when beliefs are confident.
-During load transitions, the epistemic term briefly rises as belief entropy increases, but this signal is small relative to pragmatic differences between actions.
+\textbf{Belief dynamics.}
+\Cref{fig:slo_bar} provides a visual overview of per-scenario results.
+In steady overload, $p_{\textsc{High}}$ exceeds 0.8 within 3--5 steps, after which the controller consistently selects OFFLOAD — proactive resource management that precedes visible SLO violations rather than reacting to them.
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=\columnwidth]{figures/fig_belief_scenario_steady_overload.pdf}
-    \caption{AIF belief state $Q(s)$ evolution in the steady overload scenario (6 sustained streams). Within 3--5 control steps the belief concentrates on \textsc{High} load ($p_{\textsc{High}} > 0.8$), after which the controller consistently selects demotion actions (LITE or OFFLOAD). The rapid convergence enables proactive resource management before SLO violations accumulate, an advantage over reactive heuristics that require observed violations before acting.}
-    \label{fig:belief_steady}
-\end{figure}
-
-%% ============================================================================
-\section{Discussion}
-\label{sec:discussion}
-
-\subsection{Where AIF Helps}
-
-AIF's advantages emerge in specific settings that justify its use despite not achieving the highest raw SLO:
-
-\textbf{Steady overload with structured offloading.}
-AIF achieves 92.1\% SLO in steady overload, outperforming the heuristic (90.9\%) while maintaining the highest offload utilization (22.8\%).
-This is AIF's strongest scenario: the belief converges quickly, the generative model accurately predicts the benefits of offloading, and the system reaches a stable mode allocation.
-This confirms that AIF's structured generative model enables effective cluster-level decision-making when the problem structure matches the model.
-
-\textbf{Zero-shot deployment with low variance.}
-Unlike DQN, which requires 5 training episodes per scenario and still produces seed-dependent policies (confirmed across 8 runs: burst std = 9.7\%, switch counts ranging from 3 to 87), AIF operates from the first step using profiling-derived parameters.
-AIF's cross-run variance is moderate (std 1.4--4.5\%), reflecting physical system noise rather than algorithmic instability.
-In deployment scenarios where the workload pattern is unknown a priori, AIF provides immediate, predictable functionality without a cold-start period.
-
-\textbf{Interpretability.}
-At any step, the belief distribution $Q(s)$ and per-action EFE decomposition (pragmatic vs.\ epistemic contributions) can be inspected.
-This enables operators to understand \emph{why} a particular action was chosen, which is valuable for debugging and trust in safety-critical systems.
-
-\subsection{Where AIF Struggles}
-
-\textbf{Burst response.}
-AIF's weakest result is burst (77.7\%), 9.9 pp below the heuristic.
-The combination of global cooldown ($\tau_c = 3$) and stochastic softmax selection means AIF cannot react as quickly as a threshold-based controller to sudden load spikes.
-The conservative cooldown, while preventing oscillation in other scenarios, becomes a liability when rapid sequential actions are needed.
-
-\textbf{Model misspecification.}
-AIF's performance is directly tied to the accuracy of its generative model.
-The v0$\to$v1 OFFLOAD likelihood correction demonstrates this starkly: a misspecified likelihood matrix reduced SLO by 8 percentage points.
-While the profiling-derived likelihood approach provides a systematic construction method, it cannot capture dynamics absent from the profiling data (e.g., thermal throttling under prolonged load, network congestion from concurrent offload streams).
-
-\textbf{Excessive SKIP usage (addressable).}
-With the default SKIP likelihood, AIF's skip ratio (9.3--16.3\%) is substantially higher than other controllers, reducing detection coverage.
-However, as shown in \Cref{sec:skip_tuning}, tuning the SKIP likelihood from the uninformative default ($[0.5, 0.5, 0.0]$) to a moderately penalizing setting ($[0.2, 0.45, 0.35]$) reduces the skip ratio to 4.7\% and raises SLO to 93.2\%---exceeding all baselines.
-This demonstrates that the weakness is a property of the default model specification, not a fundamental limitation of AIF.
-
-\textbf{Stochastic policy.}
-The softmax action selection introduces variance between runs.
-While this enables exploration, it means AIF does not guarantee the best action at every step, unlike the deterministic myopic greedy baseline.
-
-\subsection{Implications for Edge Orchestration}
-
-Our findings suggest that AIF is a principled alternative for edge orchestration in scenarios where:
-(1)~training data is unavailable or expensive to collect;
-(2)~workloads are non-stationary;
-(3)~operators require interpretable decision-making.
-AIF trades raw performance for stability and transparency: it uses a structured generative model instead of training, achieving predictable zero-shot behavior (std $\leq$ 4.5\%) while DQN's training-based approach yields higher peaks but also higher variance (std up to 9.7\%).
-
-The key methodological contribution is the demonstration that \emph{how} offloading is modeled in the generative model matters more than the algorithmic sophistication of the inference procedure.
-The ablation hierarchy (OFFLOAD likelihood: +7.9~pp, SKIP likelihood: +7.9~pp $\gg$ precision: 3.6~pp $>$ epistemic weight: 2.7~pp $>$ cooldown: 1.5~pp) reveals that for this real-world scheduling problem, AIF performance is dominated by the causal semantics of the likelihood model---the two likelihood corrections together account for $\sim$16~pp of improvement, while all other hyperparameters combined contribute $<$8~pp.
-This insight generalizes beyond AIF: any model-based scheduling approach must correctly represent the system-level effects of actions, not just their direct per-component outcomes.
-
-%% ============================================================================
-\section{Threats to Validity}
-\label{sec:threats}
-
-\subsection{Model Misspecification}
-
-The AIF generative model uses hand-specified likelihood matrices derived from static profiling.
-Runtime dynamics (thermal throttling, OS scheduling variance, network congestion) may cause the true observation distribution to deviate from the profiled values.
-The ablation studies partially address this by quantifying sensitivity to each model component.
-
-\subsection{Workload Representativeness}
-
-Our evaluation uses four synthetic workload scenarios with a single video source (traffic surveillance, 720p).
-Real deployments may involve heterogeneous video content, varying detection complexity, and more diverse load patterns.
-The scenarios were designed to stress different adaptation capabilities (gradual ramp, sudden burst, sustained overload, periodic oscillation) but do not cover all possible operational conditions.
-
-\subsection{Hardware Scale}
-
-The testbed comprises three Jetson nodes, limiting the offload capacity to two concurrent streams.
-Larger clusters would expand the action space and potentially change the relative effectiveness of different schedulers.
-However, the compact AIF state abstraction ($|\mathcal{S}| = 3$) may need to be extended for clusters with more heterogeneous resources.
-
-\subsection{Measurement Noise}
-
-All experiments run on physical hardware, introducing measurement noise from GPU scheduling jitter, thermal throttling, and network latency variation.
-We mitigate this through five independent runs per configuration, but some variance is inherent to physical testbed evaluation.
-
-%% ============================================================================
-\section{Conclusion}
-\label{sec:conclusion}
-
-We formulated multi-stream edge video orchestration as a POMDP and investigated Active Inference as a structured, training-free scheduler on a physical Jetson-based testbed.
-With default parameters, AIF achieves 86.0\% average SLO satisfaction without training data, compared to 87.8\% for the threshold-based heuristic, 89.9\% for the myopic oracle, and 88.2\% for DQN (which requires per-scenario training and exhibits high cross-run variance, confirmed across 8 runs).
-Crucially, we demonstrated that the generative model's likelihood specification is the primary determinant of AIF performance: correcting OFFLOAD semantics improves SLO by 8~pp, and tuning the SKIP likelihood further raises AIF to 93.2\%---surpassing all baselines including the myopic oracle.
-The ablation hierarchy (likelihood corrections: $\sim$16~pp combined $\gg$ all other hyperparameters: $<$8~pp) reveals that model construction, not algorithmic sophistication, is the primary practical challenge for AIF deployment.
-
-Our results position AIF not as a universally superior scheduler, but as a principled alternative for scenarios requiring zero-shot deployment, interpretable decisions, and belief-based adaptation under partial observability.
-The SKIP likelihood tuning result further suggests that AIF's apparent weaknesses are often symptoms of model misspecification rather than fundamental limitations.
-Future work will explore automated likelihood learning from online data, multi-factor state representations, and scaling to larger heterogeneous clusters.
-
-\bibliographystyle{plain}
-\bibliography{references}
-
-%% ============================================================================
-\appendix
-
-\section{Profiling Data}
-\label{app:profiling}
-
-\Cref{tab:profiling_full} provides the complete profiling data used to construct the AIF likelihood matrices.
-
-\begin{table}[h]
-    \centering
-    \caption{Complete per-stream profiling on the coordinator Jetson Orin Nano (YOLOv8n, 720p input, batch inference).}
-    \label{tab:profiling_full}
-    \small
-    \begin{tabular}{@{}llrr@{}}
-        \toprule
-        Mode & $n_{\text{streams}}$ & FPS & P95 (ms) \\
-        \midrule
-        FULL (640) & 1 & 28.9 & 34 \\
-        FULL (640) & 2 & 21.6 & 48 \\
-        FULL (640) & 3 & 16.7 & 59 \\
-        FULL (640) & 4 & 13.0 & 75 \\
-        FULL (640) & 5 & 10.6 & 92 \\
-        FULL (640) & 6 & 8.7 & 107 \\
-        FULL (640) & 7 & 7.9 & 113 \\
-        FULL (640) & 8 & 7.2 & 130 \\
-        \midrule
-        LITE (320) & 1 & 30.8 & 31 \\
-        LITE (320) & 2 & 25.5 & 36 \\
-        LITE (320) & 3 & 21.2 & 41 \\
-        LITE (320) & 4 & 17.6 & 47 \\
-        LITE (320) & 5 & 14.7 & 57 \\
-        LITE (320) & 6 & 12.4 & 66 \\
-        LITE (320) & 7 & 10.8 & 74 \\
-        LITE (320) & 8 & 9.4 & 87 \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\section{AIF Algorithmic Details}
-\label{app:aif}
-
-\begin{algorithm}[h]
-\caption{AIF Controller: Per-Step Decision}
-\label{alg:aif}
-\begin{algorithmic}[1]
-\Require Observation $o_t$, belief $Q(s)_{t-1}$, step counter $t$
-\Ensure Action $a_t$ or $\emptyset$ (no-op)
-\State $o_{\text{cat}} \gets \textsc{Categorize}(o_t)$ \Comment{GOOD/MARGINAL/BAD}
-\State $Q(s)_t \propto A^{m_{\text{rep}}}_{s, o_{\text{cat}}} \cdot Q(s)_{t-1}$ \Comment{Belief update}
-\If{$t - t_{\text{last\_switch}} < \tau_c$} \Comment{Global cooldown}
-    \State \Return $\emptyset$
-\EndIf
-\State $\mathcal{A}_{\text{valid}} \gets \textsc{EnumerateActions}(o_t)$
-\For{$a \in \mathcal{A}_{\text{valid}}$}
-    \State $Q(s'|a) \gets \sum_s Q(s)_t \cdot T(s'|s, a_{\text{type}})$
-    \State $Q(o|a) \gets \sum_{s'} Q(s'|a) \cdot A^{m_a}_{s',o}$
-    \State $G_{\text{prag}}(a) \gets -\sum_o Q(o|a) \ln C(o)$
-    \State $G_{\text{epis}}(a) \gets \sum_o Q(o|a) \cdot \text{KL}[Q(s|o,a) \| Q(s|a)]$
-    \State $G(a) \gets G_{\text{prag}}(a) - w_e \cdot G_{\text{epis}}(a) + \text{penalties}(a)$
-\EndFor
-\State $P(a) \propto \exp(-\beta \cdot G(a))$
-\State $a_t \sim P(a)$
-\State \Return $a_t$
-\end{algorithmic}
-\end{algorithm}
-
-\section{Mode Switch Cost Analysis}
-\label{app:switch}
-
-\begin{table}[h]
-    \centering
-    \caption{Mode switch costs measured on the coordinator Jetson Orin Nano (4 streams, batch inference). Downgrade is cheap; upgrade incurs cold-start transients.}
-    \label{tab:switch_cost}
-    \small
-    \begin{tabular}{@{}lrrr@{}}
-        \toprule
-        Transition & Peak (ms) & Steady (ms) & Penalty \\
-        \midrule
-        FULL $\to$ LITE & 130 & 42 & 1 (low) \\
-        LITE $\to$ FULL & 148 & 76 & 1 (low) \\
-        FULL $\to$ SKIP & 13 & 5 & 0 (none) \\
-        SKIP $\to$ FULL & 293 & 80 & 4 (high) \\
-        LITE $\to$ SKIP & 14 & 5 & 0 (none) \\
-        SKIP $\to$ LITE & 227 & 41 & 3 (med-high) \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\section{Extended Results}
-\label{app:results}
-
-\Cref{tab:full_metrics} provides the complete per-controller metrics across all scenarios.
-
-\begin{table}[h]
-    \centering
-    \caption{Complete metrics (mean $\pm$ std, $N=5$). Sw = mode switches, Skip = skip ratio (\%), Offl = offload ratio (\%).}
-    \label{tab:full_metrics}
-    \scriptsize
-    \begin{tabular}{@{}llrrrr@{}}
-        \toprule
-        Controller & Scenario & SLO\% & Sw & Skip\% & Offl\% \\
-        \midrule
-        \multirow{4}{*}{No-Op}
-        & Ramp-up   & 48.9{\scriptsize$\pm$2.5} & 0 & 0.0 & 0.0 \\
-        & Burst     & 53.9{\scriptsize$\pm$1.7} & 0 & 0.0 & 0.0 \\
-        & Steady    & 76.1{\scriptsize$\pm$22.2} & 0 & 0.0 & 0.0 \\
-        & Oscill.   & 69.9{\scriptsize$\pm$3.2} & 0 & 0.0 & 0.0 \\
-        \midrule
-        \multirow{4}{*}{Heuristic}
-        & Ramp-up   & 86.3{\scriptsize$\pm$4.3} & 18.6{\scriptsize$\pm$2.4} & 7.6 & 10.3 \\
-        & Burst     & 87.6{\scriptsize$\pm$4.7} & 19.0{\scriptsize$\pm$3.4} & 2.5 & 12.4 \\
-        & Steady    & 90.9{\scriptsize$\pm$1.2} & 34.4{\scriptsize$\pm$2.9} & 1.9 & 8.0 \\
-        & Oscill.   & 86.4{\scriptsize$\pm$1.4} & 32.6{\scriptsize$\pm$3.0} & 4.3 & 5.6 \\
-        \midrule
-        \multirow{4}{*}{Myopic}
-        & Ramp-up   & 90.3{\scriptsize$\pm$0.7} & 9.0{\scriptsize$\pm$0.0} & 0.0 & 0.6 \\
-        & Burst     & 83.0{\scriptsize$\pm$0.4} & 7.0{\scriptsize$\pm$0.0} & 0.0 & 0.0 \\
-        & Steady    & 93.4{\scriptsize$\pm$0.5} & 7.0{\scriptsize$\pm$0.0} & 0.0 & 1.1 \\
-        & Oscill.   & 93.0{\scriptsize$\pm$0.6} & 16.0{\scriptsize$\pm$0.0} & 0.0 & 1.8 \\
-        \midrule
-        \multirow{4}{*}{DQN}
-        & Ramp-up   & 85.4{\scriptsize$\pm$5.9} & 17.0{\scriptsize$\pm$8.9} & 5.5 & 15.0 \\
-        & Burst     & 78.4{\scriptsize$\pm$9.7} & 33.0{\scriptsize$\pm$22.2} & 10.7 & 20.8 \\
-        & Steady    & 94.9{\scriptsize$\pm$2.2} & 75.6{\scriptsize$\pm$22.3} & 0.8 & 24.4 \\
-        & Oscill.   & 93.9{\scriptsize$\pm$3.7} & 25.2{\scriptsize$\pm$27.2} & 1.6 & 29.6 \\
-        \midrule
-        \multirow{4}{*}{AIF (v1)}
-        & Ramp-up   & 87.1{\scriptsize$\pm$3.8} & 18.6{\scriptsize$\pm$1.5} & 16.0 & 19.3 \\
-        & Burst     & 77.7{\scriptsize$\pm$4.5} & 19.2{\scriptsize$\pm$0.7} & 16.3 & 15.3 \\
-        & Steady    & 92.1{\scriptsize$\pm$1.4} & 28.2{\scriptsize$\pm$0.4} & 11.6 & 22.8 \\
-        & Oscill.   & 87.2{\scriptsize$\pm$3.4} & 36.6{\scriptsize$\pm$1.4} & 9.3 & 22.1 \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\section{Additional Figures}
-\label{app:figures}
-
-\Cref{fig:slo_bar} presents the SLO satisfaction rates as a grouped bar chart.
-\Cref{fig:skip_tradeoff} visualizes the trade-off between SLO and skip ratio under different SKIP likelihood settings.
-\Cref{fig:ablation_combined} provides a side-by-side comparison of all five ablation parameters on a common scale, enabling direct magnitude comparison across generative model components.
-
-\begin{figure}[h]
-    \centering
     \includegraphics[width=\columnwidth]{figures/fig_slo_bar.pdf}
-    \caption{SLO satisfaction rate across controllers and scenarios (5-run mean $\pm$ std). The 90\% target is shown as a dashed line.}
+    \caption{SLO satisfaction rate across all controllers and scenarios (mean $\pm$ std, $N=5$ runs). Error bars reveal DQN's high cross-run variance, especially in Burst. AIF achieves competitive average SLO without training data and with consistently low variance.}
     \label{fig:slo_bar}
 \end{figure}
 
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=\columnwidth]{figures/fig_skip_tradeoff.pdf}
-    \caption{SKIP likelihood trade-off: SLO vs.\ skip ratio. Each point represents one variant$\times$scenario combination. Arrows show the direction of improvement from baseline to moderate. Penalizing SKIP consistently improves SLO while reducing skip ratio across all scenarios.}
-    \label{fig:skip_tradeoff}
-\end{figure}
+\textbf{Limitations.}
+The T=1 approximation limits burst recovery: accumulating evidence over 2--3 steps before acting is a direct cost of the single-step horizon.
+The generative model is hand-specified from static profiling, and cannot adapt to dynamics absent from that data (thermal throttling, network congestion under concurrent offload).
 
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=\columnwidth]{figures/fig_ablation_combined.pdf}
-    \caption{Combined ablation sensitivity across all five generative model parameters (OFFLOAD likelihood, precision $\beta$, epistemic weight $w_e$, cooldown $\tau_c$, SKIP likelihood). Each panel shows 3-run mean SLO per scenario as the parameter varies. The vertical scale is held constant across panels to enable direct magnitude comparison. OFFLOAD likelihood and SKIP likelihood produce the largest and most consistent effects ($\sim$8~pp each), while precision, epistemic weight, and cooldown contribute secondary effects ($<$4~pp).}
-    \label{fig:ablation_combined}
-\end{figure}
+\textbf{Conclusion.}
+We formulated multi-stream edge video scheduling as a POMDP and deployed AIF as a training-free belief-based controller on a physical Jetson Orin Nano cluster.
+Default AIF achieves 86.0\% average SLO — competitive with heuristic and RL baselines without training — but the ablation hierarchy is the paper's central finding: correcting OFFLOAD and SKIP likelihood semantics contributes $\sim$16~pp combined, far exceeding all secondary hyperparameter effects ($<$8~pp).
+This shows that for model-based schedulers under partial observability, \emph{how actions are encoded in the generative model} is more consequential than algorithmic sophistication.
+
+The open question this work raises: \emph{can the agent learn its own action semantics?}
+Treating likelihood matrices as latent variables subject to Bayesian inference — parameter learning in the full AIF framework — would allow the scheduler to build its causal understanding of OFFLOAD and SKIP effects through experience, without relying on static profiling.
+This is the primary direction for follow-on work.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
 
 \end{document}

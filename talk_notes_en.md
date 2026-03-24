@@ -23,53 +23,57 @@ AIF requires no training, works from step one, and produces low cross-run varian
 
 ### 1. What Is the Problem
 
-I am working on the following problem: on a three-node **Jetson Orin Nano** cluster — three identical nodes where one acts as the coordinator running the control loop and local inference, and two act as stateless offload workers — running multiple concurrent AI video inference streams causes GPU resource contention that degrades per-stream FPS and increases latency as stream count grows. With YOLOv8n on 720p video, adding a sixth stream drops per-stream throughput from 10.6 to 8.7 FPS — below the 10 FPS SLO — while P95 latency rises from 92 to 107 ms.
+So I'm working on this: we have a three-node **Jetson Orin Nano** cluster. Three identical devices — one acts as the coordinator, running the control loop and doing local GPU inference, and the other two are just stateless offload workers that take jobs over HTTP.
 
-This requires a scheduler that dynamically decides, for each stream, how it should be processed: local inference at full resolution (FULL, 640px), local inference at reduced resolution (LITE, 320px), skipped entirely (SKIP), or offloaded via HTTP to a worker node (OFFLOAD).
+Now, when you run multiple AI video streams concurrently on this thing, you hit GPU contention. And it's not subtle — with YOLOv8n on 720p video, adding a sixth stream drops per-stream throughput from 10.6 down to 8.7 FPS. That's below our 10 FPS SLO. P95 latency jumps from 92 to 107 ms.
 
-This is not a simulation study. We evaluate four controllers — Heuristic, Myopic Greedy, DQN, and AIF — on a real three-node Jetson testbed, across four workload scenarios (Ramp-up, Burst, Steady Overload, Oscillating), with five independent runs per controller–scenario pair.
+So you need a scheduler. One that, every second, looks at each stream and decides: should this run locally at full resolution (FULL, 640px), drop to a lighter model (LITE, 320px), skip this frame entirely (SKIP), or ship it off to a worker node (OFFLOAD)?
+
+And importantly — this is not a simulation. We run this on real hardware, compare four controllers, across four workload patterns, five independent runs each.
 
 ### 2. Why Is This Hard
 
-The difficulty is not just the large action space. The fundamental challenge is that **the true system state cannot be directly observed**.
+The obvious answer is "the action space is large." But that's not really the hard part.
 
-The scheduler sees only noisy, lagged signals: inference FPS, P95 latency, GPU utilization. But what actually determines per-stream performance is the underlying GPU contention level, thermal throttling, and queueing state — all of which are hidden.
+The hard part is that **you can't see the true system state**. What the scheduler sees is FPS, P95 latency, GPU utilization — all noisy, all lagged. What actually drives performance is the underlying GPU contention level, thermal throttling, queueing effects. All hidden.
 
-This means the problem is not a simple threshold-triggering problem. It is a **POMDP**: the scheduler must infer the hidden system load state from noisy observations, then decide how to act. Any approach that treats observations as ground truth will systematically misread the system state.
+So this isn't a threshold problem — "if FPS drops below X, do Y." That framing assumes what you observe is ground truth. It isn't. The real structure here is a **POMDP**: you have to infer what's actually going on inside the system, and then decide how to act.
 
 ### 3. The Core Idea
 
-The core insight is not "use a more complex algorithm." It is:
+My core idea isn't "use a fancier algorithm." It's simpler than that:
 
-> A scheduler should not react to observations directly. It should explicitly maintain a **probabilistic belief** over the hidden load state, and encode the **system-level semantics** of each action in the generative model.
+> Don't just react to observations. Maintain an explicit **probabilistic belief** about the hidden load state, and make sure the **system-level consequences** of each action are correctly encoded in the model.
 
-This matters most for two actions:
+That second part is where everything lives. Two actions in particular:
 
-- **OFFLOAD**: If encoded using the offloaded stream's own QoS (~7 FPS, near-BAD), the controller treats OFFLOAD as a "bad action" and never uses it. But the true value of OFFLOAD is that it frees local GPU capacity, improving the remaining local streams. This system-level effect must be explicitly encoded.
-- **SKIP**: If encoded as a neutral observation ("no signal"), the policy treats SKIP as a free action and overuses it. Once encoded as "frame-skipping has a cost — it is degraded service," excessive SKIP behavior disappears naturally.
+- **OFFLOAD**: If you encode it naïvely — using the offloaded stream's own performance (~7 FPS, near-BAD) — the controller concludes OFFLOAD is a bad action and never uses it. But that's wrong. The value of OFFLOAD isn't that the offloaded stream performs better. It's that you free up local GPU capacity, which benefits all the remaining streams. That system-level effect has to be explicitly written into the model.
+- **SKIP**: If SKIP is encoded as a neutral observation — "skipping produces no signal" — then from the controller's perspective, SKIP is free. It'll overuse it constantly. Once you encode SKIP as "this is degraded service, there's a real cost," that behavior disappears on its own.
 
 ### 4. How It Works
 
-The concrete implementation:
+Concretely, here's the setup:
 
-1. The hidden system state is abstracted into three discrete load levels: **LOW** (≤3 local inference streams), **MEDIUM** (4–5), **HIGH** (≥6).
-2. At each 1-second control step, the controller performs a **Bayesian belief update** given the current noisy observation.
-3. For each candidate action, the controller computes the **Expected Free Energy (EFE)** — roughly, how well does the predicted post-action observation match the target preference distribution?
-4. Actions are selected via a precision-weighted softmax over EFE values.
+1. The hidden system state is discretized into three levels: **LOW** (≤3 streams inferring locally), **MEDIUM** (4–5), **HIGH** (≥6).
+2. Every 1-second control step, we do a **Bayesian belief update** using the latest noisy observation.
+3. For each candidate action, we compute the **Expected Free Energy (EFE)** — which has two terms. The pragmatic term asks: how well does the predicted outcome match our goal? The epistemic term asks: how much would this action tell us about the hidden state? That two-term structure is what separates AIF from just doing Bayesian filtering with a utility function on top.
+4. We pick the action with the lowest EFE, using a precision-weighted softmax.
 
-The key is not the equations themselves, but how the generative model defines "what consequence does this action have on the overall system state." The entire per-step computation takes less than 1 ms — fully compatible with real-time control.
+One thing worth flagging: this is a single-step approximation — T=1. We're not doing the full multi-step policy inference that canonical AIF does. That's a deliberate engineering call. Real-time edge control, 1-second intervals, under 1 ms per step on Jetson hardware. The belief state still carries forward history, so we're not fully memoryless — but we are acting greedily at each step.
+
+The key isn't the math. It's what you write into the model for "what does this action do to the overall system."
 
 ### 5. Why It Matters
 
-The experimental results show a clear pattern:
+Here's what the experiments show:
 
-- Default AIF (86.0% SLO) is on par with the Heuristic (87.8%).
-- DQN peaks at 94.9% in some runs, but exhibits high seed-dependent variance in the burst scenario (range: 64.6%–94.3%; switch counts from 2 to 87) — indicating that short-episode training produces fundamentally unpredictable policies.
-- **Once OFFLOAD and SKIP likelihoods are corrected from per-stream to system-level semantics, AIF's average SLO improves from 86% to 93.2%, surpassing the profiling-based myopic greedy baseline (89.9%).**
+- Default AIF at 86.0% SLO is basically on par with the threshold heuristic at 87.8%. Respectable, but not impressive.
+- DQN hits 94.9% in steady overload, so it can do better — but in the burst scenario, its behavior is all over the place. SLO ranges from 64.6% to 94.3% across seeds. Switch counts from 2 to 87. Five episodes of training just isn't enough to produce a reliable policy.
+- **But here's the key result: once we fix the OFFLOAD and SKIP likelihoods to use system-level semantics, AIF goes from 86% to 93.2%. That beats the myopic greedy baseline at 89.9% — which has access to profiling data.**
 
-The deeper conclusion is that for this class of edge scheduling problems, **how actions are encoded in the generative model is a core part of the method** — not an implementation detail. The ablation hierarchy makes this concrete: the two likelihood corrections together account for ~16 pp of improvement, while all algorithmic parameters (precision, epistemic weight, cooldown) combined contribute less than 8 pp.
+And the ablation hierarchy makes the real lesson concrete: those two likelihood corrections together contribute about 16 percentage points. Everything else — precision, epistemic weight, cooldown — combined gives you less than 8 pp.
 
-Model specification, not algorithmic complexity, is the primary determinant of performance.
+Model specification is the dominant factor. Not the algorithm.
 
 ---
 
