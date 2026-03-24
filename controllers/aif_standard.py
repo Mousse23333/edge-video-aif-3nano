@@ -414,9 +414,16 @@ class StandardAIFController(ControllerInterface):
         # used to initialise policy rollout without re-factorising.
         self.Q_joint = np.outer(self.D1, self.D2)
 
-        # Snapshots of beliefs at the moment an action was taken (for Module 7)
+        # Snapshots of beliefs at the moment an action was taken (for Module 7).
+        # prev_Q_joint stores the full joint — marginals can be derived as:
+        #   prev_qs1 = prev_Q_joint.sum(axis=1)
+        #   prev_qs2 = prev_Q_joint.sum(axis=0)
+        # Keeping the joint enables computing the full joint sufficient statistic
+        # prev_Q_joint[s1_prev,s2_prev] * Q_joint[s1_next,s2_next] for future
+        # fully-joint B-update, without re-running inference.
         self.prev_qs1 = None
         self.prev_qs2 = None
+        self.prev_Q_joint = None   # full joint at action time; None until first step
 
         # ── Load configs ──────────────────────────────────────────
         self._load_configs()
@@ -457,6 +464,7 @@ class StandardAIFController(ControllerInterface):
         self.prev_obs = None
         self.prev_qs1 = None
         self.prev_qs2 = None
+        self.prev_Q_joint = None
 
         # Build policies for this episode
         self._policies = construct_policies(self.T)
@@ -739,9 +747,13 @@ class StandardAIFController(ControllerInterface):
             axis=1, keepdims=True)
 
         # --- Update A2 (observation model for system health) ---
+        # Use the true joint posterior Q(s1,s2) rather than the factorized
+        # outer product qs1⊗qs2: A2's likelihood P(o2|s1,s2) depends on BOTH
+        # factors, so the correct soft-assignment weight is the joint belief,
+        # not a product of marginals (which discards cross-factor correlation).
         for s2 in range(N_S2):
             for s1 in range(N_S1):
-                weight = self.qs1[s1] * self.qs2[s2]
+                weight = self.Q_joint[s1, s2]
                 self._a2_counts[s2, s1, o2] += self.lr_A * weight
         # Re-derive A2 from counts
         for s2 in range(N_S2):
@@ -754,10 +766,15 @@ class StandardAIFController(ControllerInterface):
         # statistic but conflates belief drift with genuine state change.
         # Acceptable for online prototype; a cleaner approach would use the
         # B-predicted prior Q(s'|π) as the target rather than the posterior.
-        if u_prev is not None and self.prev_qs1 is not None:
+        if u_prev is not None and self.prev_Q_joint is not None:
+            # Derive marginals from the stored joint (mathematically equivalent
+            # to prev_qs1/prev_qs2, but makes the source of truth explicit).
+            # Future joint-B learning would use prev_Q_joint[s1_p,s2_p] *
+            # Q_joint[s1_n,s2_n] as the sufficient statistic directly.
+            prev_qs1_j = self.prev_Q_joint.sum(axis=1)   # (N_S1,)
             for s_prev in range(N_S1):
                 for s_next in range(N_S1):
-                    weight = self.prev_qs1[s_prev] * self.qs1[s_next]
+                    weight = prev_qs1_j[s_prev] * self.qs1[s_next]
                     self._b1_counts[s_next, s_prev, u_prev] += (
                         self.lr_B * weight)
             # Re-derive B1
@@ -767,10 +784,11 @@ class StandardAIFController(ControllerInterface):
                     col_sums, 1e-16, None)
 
         # --- Update B2 (transition model for offload state) ---
-        if u_prev is not None and self.prev_qs2 is not None:
+        if u_prev is not None and self.prev_Q_joint is not None:
+            prev_qs2_j = self.prev_Q_joint.sum(axis=0)   # (N_S2,)
             for s_prev in range(N_S2):
                 for s_next in range(N_S2):
-                    weight = self.prev_qs2[s_prev] * self.qs2[s_next]
+                    weight = prev_qs2_j[s_prev] * self.qs2[s_next]
                     self._b2_counts[s_next, s_prev, u_prev] += (
                         self.lr_B * weight)
             # Re-derive B2
@@ -934,9 +952,12 @@ class StandardAIFController(ControllerInterface):
           7. Ground to concrete action     (Action Grounding)
           8. Learn from experience         (Module 7)
         """
-        # Store previous beliefs for learning
+        # Snapshot beliefs *before* this step's inference (Module 7 needs them).
+        # Store the full joint so _learning_update can derive marginals from it
+        # and future analyses can compare factorized vs joint sufficient stats.
         self.prev_qs1 = self.qs1.copy()
         self.prev_qs2 = self.qs2.copy()
+        self.prev_Q_joint = self.Q_joint.copy()
 
         # ── Module 2: Observation Input ───────────────────────────
         o1, o2 = self._extract_observations(observation)
@@ -958,6 +979,10 @@ class StandardAIFController(ControllerInterface):
         # ── Action Grounding ──────────────────────────────────────
         concrete_action = self._ground_action(
             u_abstract, observation, stream_manager)
+
+        # Cache for semantic-gap analysis in get_diagnostics()
+        self._last_u_abstract = u_abstract
+        self._last_concrete_action = concrete_action  # (sid, mode) or None
 
         # Track for next step
         self.prev_action = u_abstract
@@ -992,10 +1017,18 @@ class StandardAIFController(ControllerInterface):
     def get_diagnostics(self):
         """Return internal state for interpretability analysis."""
         diag = {
-            "belief_load": self.qs1.tolist(),
+            "belief_load":    self.qs1.tolist(),
             "belief_offload": self.qs2.tolist(),
+            "belief_joint":   self.Q_joint.tolist(),  # full joint Q(s1,s2)
             "step": self.step,
         }
+        # Semantic-gap tracing: abstract policy choice vs concrete execution.
+        # Null concrete_action means grounding found no eligible stream —
+        # useful for detecting over-conservative constraint violations.
+        if hasattr(self, "_last_u_abstract"):
+            diag["u_abstract"]      = ACTION_NAMES[self._last_u_abstract]
+            diag["concrete_action"] = self._last_concrete_action  # (sid, mode) | None
+            diag["grounding_null"]  = self._last_concrete_action is None
         if hasattr(self, "_last_p_u0"):
             diag["action_probs"] = {
                 ACTION_NAMES[i]: float(self._last_p_u0[i])
